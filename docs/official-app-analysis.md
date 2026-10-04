@@ -46,3 +46,5 @@ image cropping). None of it is needed to drive the two-segment display of the AK
 | Sensors | HWiNFO SDK in a separate worker process | `GetSystemTimes` for usage, one MSR / SMN read through PawnIO for temperature |
 | HID | `node-hid` | `WriteFile` on the HID handle |
 | Processes | 16 | 1 service + 1 optional tray icon |
+| RAM | ~1 GB working set | 0.75 MB private working set (service), 1.1 MB (tray) |
+| Install size | ~1.2 GB | 0.7 MB (two executables and two PawnIO modules) |

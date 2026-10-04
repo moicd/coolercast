@@ -8,6 +8,16 @@ The official app is an Electron application that, on a typical setup, keeps **16
 [the analysis](docs/official-app-analysis.md)). deepcool-native does the same job with a single small
 Windows service written in Rust, plus an optional tray icon.
 
+| | Official DeepCool app 1.2.14 | deepcool-native 0.1 |
+|---|---|---|
+| Processes | 16 (plus 3 services and 4 drivers) | 1 service + optional tray icon |
+| RAM | ~1 GB working set | 0.75 MB private (service), 1.1 MB (tray) |
+| CPU while idle | several Chromium processes awake | 0 % (wakes once per second) |
+| Install size | ~1.2 GB | 0.7 MB |
+
+<sub>Measured on Windows 11 with an AK400 DIGITAL and an Intel Core i5-9400F. RAM for deepcool-native
+is the private working set shown by Task Manager.</sub>
+
 > [!NOTE]
 > This is an independent community project. It is not affiliated with, endorsed by or supported by
 > DeepCool. Use it at your own risk.
@@ -25,7 +35,7 @@ Windows service written in Rust, plus an optional tray icon.
 
 | Cooler | USB ID | Status |
 |---|---|---|
-| AK400 DIGITAL / DIGITAL SE | `3633:0001` | Tested |
+| AK400 DIGITAL / DIGITAL SE | `3633:0001` | Tested (`A400-DIGITAL`) |
 | AK620 DIGITAL / DIGITAL SE | `3633:0002` | Same protocol, untested |
 | AK500 DIGITAL | `3633:0003` | Same protocol, untested |
 | AK500S DIGITAL / DIGITAL SE | `3633:0004` | Same protocol, untested |
