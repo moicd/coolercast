@@ -12,6 +12,9 @@ publish = false
 [dependencies]
 coolercast-core.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dependencies.windows-sys]
 workspace = true
 features = [

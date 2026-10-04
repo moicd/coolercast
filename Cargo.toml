@@ -12,6 +12,7 @@ repository = "https://github.com/moicd/coolercast"
 
 [workspace.dependencies]
 coolercast-core = { path = "crates/core" }
+embed-resource = "3.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "1.1", default-features = false, features = ["std", "parse", "serde"] }
 windows-service = "0.8"
