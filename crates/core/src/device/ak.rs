@@ -52,7 +52,7 @@ pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
 }
 
 /// Rounds a reading to what three digits can show.
-fn display_value(value: f32) -> u16 {
+pub fn display_value(value: f32) -> u16 {
     if value.is_nan() {
         0
     } else {

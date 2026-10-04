@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::{Config, Mode};
 use crate::device::{self, Cooler, Reading};
-use crate::ipc::Status;
+use crate::ipc::{HISTORY_LEN, Sample, Shown, Status};
 use crate::sensors::cpu_temp::CpuTemp;
 use crate::sensors::cpu_usage::CpuUsage;
 use crate::win::{Event, wait_any};
@@ -145,8 +145,21 @@ impl Engine {
             {
                 let mut state = self.lock();
                 state.status.devices = coolers.iter().map(|c| c.name().to_owned()).collect();
-                state.status.cpu_temp = cpu_temp;
-                state.status.cpu_usage = Some(cpu_usage);
+                let status = &mut state.status;
+                status.cpu_temp = cpu_temp;
+                status.cpu_usage = Some(cpu_usage);
+                status.shown = Some(match reading {
+                    Reading::Temperature { .. } => Shown::Temperature,
+                    Reading::Usage { .. } => Shown::Usage,
+                });
+                status.alarm_active = alarm;
+                if status.history.len() == HISTORY_LEN {
+                    status.history.remove(0);
+                }
+                status.history.push(Sample {
+                    cpu_temp,
+                    cpu_usage,
+                });
             }
 
             let interval = Duration::from_millis(config.interval_ms.into());

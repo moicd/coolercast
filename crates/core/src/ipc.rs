@@ -164,6 +164,23 @@ impl Drop for SecurityDescriptor {
     }
 }
 
+/// Number of samples kept in [`Status::history`].
+pub const HISTORY_LEN: usize = 120;
+
+/// Which value the cooler display currently shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Temperature,
+    Usage,
+}
+
+/// One sensor reading per refresh interval.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sample {
+    pub cpu_temp: Option<f32>,
+    pub cpu_usage: f32,
+}
+
 /// Snapshot of what the service is doing, as reported by `status`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status {
@@ -172,6 +189,12 @@ pub struct Status {
     pub cpu_usage: Option<f32>,
     /// Why the temperature is unavailable, if it is.
     pub temp_error: Option<String>,
+    /// What the display shows right now (`None` before the first update).
+    pub shown: Option<Shown>,
+    /// Whether the display is blinking its alarm.
+    pub alarm_active: bool,
+    /// Recent samples, oldest first, at most [`HISTORY_LEN`].
+    pub history: Vec<Sample>,
     pub config: Config,
 }
 
@@ -194,6 +217,27 @@ impl Status {
             &self.cpu_usage.map_or(String::new(), |u| format!("{u:.1}")),
         );
         line("temp_error", self.temp_error.as_deref().unwrap_or(""));
+        line(
+            "shown",
+            match self.shown {
+                Some(Shown::Temperature) => "temperature",
+                Some(Shown::Usage) => "usage",
+                None => "",
+            },
+        );
+        line(
+            "alarm_active",
+            if self.alarm_active { "true" } else { "false" },
+        );
+        let history: Vec<String> = self
+            .history
+            .iter()
+            .map(|s| match s.cpu_temp {
+                Some(t) => format!("{t:.1}/{:.1}", s.cpu_usage),
+                None => format!("/{:.1}", s.cpu_usage),
+            })
+            .collect();
+        line("history", &history.join(","));
         for (key, value) in self.config.entries() {
             line(key, &value);
         }
@@ -219,6 +263,26 @@ impl Status {
                 "cpu_usage" => status.cpu_usage = number(),
                 "temp_error" => {
                     status.temp_error = Some(value.to_owned()).filter(|e| !e.is_empty())
+                }
+                "shown" => {
+                    status.shown = match value {
+                        "temperature" => Some(Shown::Temperature),
+                        "usage" => Some(Shown::Usage),
+                        _ => None,
+                    }
+                }
+                "alarm_active" => status.alarm_active = value == "true",
+                "history" => {
+                    status.history = value
+                        .split(',')
+                        .filter_map(|entry| {
+                            let (temp, usage) = entry.split_once('/')?;
+                            Some(Sample {
+                                cpu_temp: temp.parse().ok(),
+                                cpu_usage: usage.parse().ok()?,
+                            })
+                        })
+                        .collect()
                 }
                 // Ignore settings added by a newer service.
                 _ => {
@@ -262,6 +326,18 @@ mod tests {
             cpu_temp: Some(41.5),
             cpu_usage: Some(12.0),
             temp_error: None,
+            shown: Some(Shown::Usage),
+            alarm_active: true,
+            history: vec![
+                Sample {
+                    cpu_temp: Some(40.5),
+                    cpu_usage: 3.0,
+                },
+                Sample {
+                    cpu_temp: None,
+                    cpu_usage: 99.5,
+                },
+            ],
             config: Config {
                 mode: Mode::Auto,
                 unit: Unit::Fahrenheit,
