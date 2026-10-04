@@ -1,0 +1,21 @@
+[package]
+name = "deepcool-native"
+description = "Drives DeepCool cooler displays without the official app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+deepcool-core.workspace = true
+windows-service.workspace = true
+
+[dependencies.windows-sys]
+workspace = true
+features = ["Win32_Foundation", "Win32_System_Console"]
+
+[lints]
+workspace = true
