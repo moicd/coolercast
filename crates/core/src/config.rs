@@ -104,7 +104,7 @@ impl Config {
 
     pub fn to_toml(&self) -> String {
         format!(
-            "# deepcool-native settings. Changes are picked up automatically.\n\
+            "# CoolerCast settings. Changes are picked up automatically.\n\
              \n\
              # What the display shows: \"temperature\", \"usage\" or \"auto\" (alternates both).\n\
              mode = \"{mode}\"\n\

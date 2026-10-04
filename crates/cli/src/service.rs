@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use deepcool_core::config::Config;
-use deepcool_core::engine::Engine;
-use deepcool_core::win::{self, Event};
-use deepcool_core::{error, info, ipc, log, paths};
+use coolercast_core::config::Config;
+use coolercast_core::engine::Engine;
+use coolercast_core::win::{self, Event};
+use coolercast_core::{error, info, ipc, log, paths};
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
     ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
@@ -21,8 +21,8 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::Result;
 
-pub const SERVICE_NAME: &str = "deepcool-native";
-const DISPLAY_NAME: &str = "DeepCool Native";
+pub const SERVICE_NAME: &str = "coolercast";
+const DISPLAY_NAME: &str = "CoolerCast";
 const DESCRIPTION: &str = "Shows CPU temperature and usage on DeepCool cooler displays.";
 
 const ERROR_ACCESS_DENIED: i32 = 5;
@@ -41,7 +41,7 @@ pub fn run() -> Result {
 
 fn service_main(_arguments: Vec<OsString>) {
     log::init(Some(paths::log_file()), false);
-    info!("deepcool-native {} starting", env!("CARGO_PKG_VERSION"));
+    info!("coolercast {} starting", env!("CARGO_PKG_VERSION"));
     if let Err(e) = run_service() {
         error!("service failed: {e}");
     }

@@ -1,4 +1,5 @@
-//! deepcool-native: shows CPU temperature and usage on DeepCool cooler displays.
+//! coolercast: CLI and Windows service of CoolerCast, which shows CPU temperature and usage on
+//! the display of DeepCool coolers.
 
 mod service;
 
@@ -9,20 +10,20 @@ use std::thread;
 use std::time::Duration;
 use std::{env, io};
 
-use deepcool_core::config::{Config, Unit};
-use deepcool_core::device::{self, Cooler, Reading};
-use deepcool_core::engine::Engine;
-use deepcool_core::sensors::cpu_temp::CpuTemp;
-use deepcool_core::sensors::cpu_usage::CpuUsage;
-use deepcool_core::win::{self, Event};
-use deepcool_core::{ipc, log, paths};
+use coolercast_core::config::{Config, Unit};
+use coolercast_core::device::{self, Cooler, Reading};
+use coolercast_core::engine::Engine;
+use coolercast_core::sensors::cpu_temp::CpuTemp;
+use coolercast_core::sensors::cpu_usage::CpuUsage;
+use coolercast_core::win::{self, Event};
+use coolercast_core::{ipc, log, paths};
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 use windows_sys::core::BOOL;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "\
-Usage: deepcool-native <command>
+Usage: coolercast <command>
 
 Commands:
   list              Show detected coolers and sensor readings
@@ -56,7 +57,7 @@ fn main() -> ExitCode {
         "stop" => service::stop(),
         "service" => service::run(),
         "version" | "--version" | "-V" => {
-            println!("deepcool-native {}", env!("CARGO_PKG_VERSION"));
+            println!("coolercast {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {

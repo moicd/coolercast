@@ -3,9 +3,9 @@
 use std::env;
 use std::path::PathBuf;
 
-pub const APP_NAME: &str = "deepcool-native";
+pub const APP_NAME: &str = "CoolerCast";
 
-/// `%ProgramData%\deepcool-native`, shared by the service and the tray app.
+/// `%ProgramData%\CoolerCast`, shared by the service and the app.
 pub fn data_dir() -> PathBuf {
     env::var_os("ProgramData")
         .map(PathBuf::from)
@@ -18,7 +18,7 @@ pub fn config_file() -> PathBuf {
 }
 
 pub fn log_file() -> PathBuf {
-    data_dir().join(format!("{APP_NAME}.log"))
+    data_dir().join("coolercast.log")
 }
 
 /// Locates a PawnIO module shipped with the app: `modules\` next to the executable, the

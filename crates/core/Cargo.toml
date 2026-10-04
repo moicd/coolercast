@@ -1,6 +1,6 @@
 [package]
-name = "deepcool-core"
-description = "Device protocols, HID transport, sensors and IPC for deepcool-native"
+name = "coolercast-core"
+description = "Device protocols, HID transport, sensors and IPC for coolercast"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

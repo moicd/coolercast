@@ -4,12 +4,12 @@ Guidance for coding agents working on this repository.
 
 ## Project
 
-deepcool-native is a lightweight, native replacement for the official DeepCool app. It drives the
+CoolerCast is a lightweight, native replacement for the official DeepCool app. It drives the
 display of DeepCool CPU coolers (AK series for now) with CPU temperature and usage. Windows only.
 
-- `crates/core` (`deepcool-core`): HID transport, device protocols, sensors, config, IPC, engine.
-- `crates/service` (`deepcool-native.exe`): CLI and Windows service (runs as LocalSystem).
-- `crates/tray` (`deepcool-tray.exe`): optional tray icon that talks to the service.
+- `crates/core` (`coolercast-core`): HID transport, device protocols, sensors, config, IPC, engine.
+- `crates/cli` (`coolercast.exe`): CLI and Windows service (runs as LocalSystem).
+- `crates/app` (`coolercast-app.exe`): tray icon and settings window; talks to the service.
 - `third_party/pawnio-modules`: prebuilt PawnIO modules (LGPL-2.1), loaded at runtime.
 - `docs/`: protocol notes and the analysis of the official app.
 
@@ -26,9 +26,9 @@ cargo build --release                # optimized binaries in target/release
 Hardware checks (need a connected cooler and the official DeepCool app closed):
 
 ```bash
-target/debug/deepcool-native list    # detected devices and the temperature sensor
-target/debug/deepcool-native test    # test pattern on the display
-target/debug/deepcool-native run     # foreground loop; run elevated for the CPU temperature
+target/debug/coolercast list    # detected devices and the temperature sensor
+target/debug/coolercast test    # test pattern on the display
+target/debug/coolercast run     # foreground loop; run elevated for the CPU temperature
 ```
 
 ## Skills

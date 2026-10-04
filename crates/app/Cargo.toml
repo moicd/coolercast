@@ -1,6 +1,6 @@
 [package]
-name = "deepcool-tray"
-description = "Tray icon for deepcool-native"
+name = "coolercast-app"
+description = "Tray icon for coolercast"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-deepcool-core.workspace = true
+coolercast-core.workspace = true
 
 [dependencies.windows-sys]
 workspace = true

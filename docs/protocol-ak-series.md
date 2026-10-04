@@ -36,7 +36,7 @@ about once per second; the display keeps the last value it received.
 | D7–D63 | `0` | Unused |
 
 Bar level: `1` when the value is below 15, otherwise `round(value / 10)`, clamped to `1..=10`.
-deepcool-native computes the bar from the Celsius temperature in both temperature units, so the bar
+CoolerCast computes the bar from the Celsius temperature in both temperature units, so the bar
 means the same thing regardless of the unit shown.
 
 The official app uses an alarm threshold of 90 °C (194 °F).
@@ -56,7 +56,7 @@ init            10 aa 00 00 00 00 00 ...
 The *SE* variants use the same packet but their report descriptor has no report ID, so every byte
 is shifted one position to the left on the wire (64 bytes starting with the mode byte). On Windows
 the HID stack hides that difference: a device without report IDs takes a 65-byte buffer whose first
-byte is `0`, followed by the same payload. deepcool-native reads the report ID from the device's
+byte is `0`, followed by the same payload. CoolerCast reads the report ID from the device's
 report descriptor (`HidP_GetValueCaps`) and uses it as D0, which covers both variants with a single
 code path.
 

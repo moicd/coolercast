@@ -1,5 +1,5 @@
 [package]
-name = "deepcool-native"
+name = "coolercast"
 description = "Drives DeepCool cooler displays without the official app"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-deepcool-core.workspace = true
+coolercast-core.workspace = true
 windows-service.workspace = true
 
 [dependencies.windows-sys]

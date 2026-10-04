@@ -38,9 +38,9 @@ image cropping). None of it is needed to drive the two-segment display of the AK
 3. About once per second the main process writes a 64-byte HID output report with the mode, the bar
    level and three digits (see [protocol-ak-series.md](protocol-ak-series.md)).
 
-## What deepcool-native does instead
+## What CoolerCast does instead
 
-| | Official app | deepcool-native |
+| | Official app | CoolerCast |
 |---|---|---|
 | Runtime | Electron + Chromium + WebView2 | Native Win32 (Rust), no runtime |
 | Sensors | HWiNFO SDK in a separate worker process | `GetSystemTimes` for usage, one MSR / SMN read through PawnIO for temperature |

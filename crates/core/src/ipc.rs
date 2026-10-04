@@ -23,7 +23,7 @@ use windows_sys::Win32::System::Pipes::{
 use crate::config::Config;
 use crate::win::{Handle, wide};
 
-pub const PIPE_NAME: &str = r"\\.\pipe\deepcool-native";
+pub const PIPE_NAME: &str = r"\\.\pipe\coolercast";
 
 const BUFFER_SIZE: u32 = 4096;
 const CLIENT_TIMEOUT_MS: u32 = 1000;

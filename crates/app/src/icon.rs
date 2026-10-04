@@ -2,7 +2,7 @@
 
 use std::{mem, ptr, slice};
 
-use deepcool_core::win::wide;
+use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Gdi::{
     ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateBitmap,

@@ -1,5 +1,5 @@
-//! deepcool-tray: tray icon showing the CPU temperature, with a menu to change the display
-//! settings of the deepcool-native service.
+//! coolercast-app: tray icon showing the CPU temperature, with a menu to change the display
+//! settings of the CoolerCast service.
 
 #![windows_subsystem = "windows"]
 
@@ -10,9 +10,9 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{mem, ptr};
 
-use deepcool_core::config::{Mode, Unit};
-use deepcool_core::ipc::{self, Status};
-use deepcool_core::win::wide;
+use coolercast_core::config::{Mode, Unit};
+use coolercast_core::ipc::{self, Status};
+use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
@@ -63,7 +63,7 @@ thread_local! {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
-    let mutex_name = wide(r"Local\deepcool-tray");
+    let mutex_name = wide(r"Local\coolercast-app");
     let _single_instance = unsafe { CreateMutexW(ptr::null(), 0, mutex_name.as_ptr()) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return;
@@ -77,7 +77,7 @@ fn main() {
         );
 
         let instance = GetModuleHandleW(ptr::null());
-        let class = wide("deepcool-tray");
+        let class = wide("coolercast-app");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
@@ -204,7 +204,7 @@ fn icon_content(status: Option<&Status>) -> (String, icon::Rgb) {
 
 fn tooltip(status: Option<&Status>) -> String {
     let Some(s) = status else {
-        return "DeepCool Native\nService not running".into();
+        return "CoolerCast\nService not running".into();
     };
     let unit = s.config.unit;
     let temp = s.cpu_temp.map_or("--".into(), |t| {
@@ -216,7 +216,7 @@ fn tooltip(status: Option<&Status>) -> String {
     } else {
         s.devices.join(", ")
     };
-    format!("DeepCool Native\nCPU {temp} · {usage}\n{devices}")
+    format!("CoolerCast\nCPU {temp} · {usage}\n{devices}")
 }
 
 fn show_menu(hwnd: HWND) {
