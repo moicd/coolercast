@@ -45,7 +45,7 @@ jobs:
           Copy-Item third_party/pawnio-modules/*.bin, third_party/pawnio-modules/COPYING "$dist/modules"
           Compress-Archive -Path "$dist/*" -DestinationPath dist/deepcool-native-windows-x64.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deepcool-native-windows-x64
           path: dist/deepcool-native-windows-x64.zip
