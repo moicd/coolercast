@@ -27,7 +27,8 @@ Task Manager.</sub>
 - CPU temperature (°C or °F), CPU usage, or both alternating.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a Windows service: starts with the PC, no window, no tray icon required.
-- Optional tray icon that shows the temperature and lets you switch modes.
+- Optional tray icon that shows the temperature, and a settings window with a live preview of
+  the cooler display and the last two minutes of temperature and usage.
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
 - No runtime, no installer, no telemetry, no network access.
 
@@ -69,7 +70,8 @@ Other DeepCool products use different protocols. Contributions are welcome; see
    ```
 
    The service is installed, set to start automatically and started.
-3. Optional: run `coolercast-app.exe` and enable **Start with Windows** from its menu.
+3. Optional: run `coolercast-app.exe` and enable **Start with Windows** in its settings window.
+   Click the tray icon to open the window again; right-click it for the quick menu.
 
 To remove it, run `coolercast uninstall` as administrator and delete the folder.
 
@@ -89,7 +91,7 @@ coolercast start | stop      Start or stop the installed service (administrator)
 ### Settings
 
 Settings live in `C:\ProgramData\CoolerCast\config.toml`. Change them with
-`coolercast set`, from the tray menu, or by editing the file (as administrator); the service
+`coolercast set`, from the tray app, or by editing the file (as administrator); the service
 picks up changes immediately.
 
 | Key | Values | Default |

@@ -8,6 +8,7 @@ use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, 
 
 use crate::gfx::Color;
 
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
     pub background: Color,
@@ -29,7 +30,11 @@ pub struct Theme {
 
 impl Theme {
     pub fn current() -> Self {
-        if apps_use_dark_theme() { Self::dark() } else { Self::light() }
+        if apps_use_dark_theme() {
+            Self::dark()
+        } else {
+            Self::light()
+        }
     }
 
     fn dark() -> Self {

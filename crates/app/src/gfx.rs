@@ -13,7 +13,10 @@ pub struct Gdiplus(usize);
 
 impl Gdiplus {
     pub fn start() -> Option<Self> {
-        let input = GdiplusStartupInput { GdiplusVersion: 1, ..Default::default() };
+        let input = GdiplusStartupInput {
+            GdiplusVersion: 1,
+            ..Default::default()
+        };
         let mut token = 0usize;
         let status = unsafe { GdiplusStartup(&mut token, &input, ptr::null_mut()) };
         (status == Ok).then_some(Self(token))
@@ -58,7 +61,12 @@ impl Rect {
     }
 
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
-        Self::new(self.x + dx, self.y + dy, self.w - 2.0 * dx, self.h - 2.0 * dy)
+        Self::new(
+            self.x + dx,
+            self.y + dy,
+            self.w - 2.0 * dx,
+            self.h - 2.0 * dy,
+        )
     }
 
     pub fn right(&self) -> f32 {
@@ -113,12 +121,17 @@ impl Canvas {
         let family = |names: &[&str]| {
             names.iter().find_map(|name| {
                 let mut f = ptr::null_mut();
-                let ok =
-                    unsafe { GdipCreateFontFamilyFromName(wide(name).as_ptr(), ptr::null_mut(), &mut f) };
+                let ok = unsafe {
+                    GdipCreateFontFamilyFromName(wide(name).as_ptr(), ptr::null_mut(), &mut f)
+                };
                 (ok == Ok).then_some(f)
             })
         };
-        let regular = family(&["Segoe UI"]).unwrap_or(ptr::null_mut());
+        let regular = family(&["Segoe UI", "Tahoma"]).unwrap_or_else(|| {
+            let mut f = ptr::null_mut();
+            unsafe { GdipGetGenericFontFamilySansSerif(&mut f) };
+            f
+        });
         let semibold = family(&["Segoe UI Semibold"]).unwrap_or(regular);
         // Typographic layout: no extra padding around the text.
         let mut generic = ptr::null_mut();
@@ -128,6 +141,7 @@ impl Canvas {
             GdipCloneStringFormat(generic, &mut format);
             GdipSetStringFormatFlags(format, StringFormatFlagsNoWrap);
             GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
+            GdipSetStringFormatTrimming(format, StringTrimmingEllipsisCharacter);
         }
         Some(Self {
             g,
@@ -191,13 +205,6 @@ impl Canvas {
         path
     }
 
-    pub fn fill_rect(&self, r: Rect, color: Color) {
-        let r = self.r(r);
-        self.with_brush(color, |b| unsafe {
-            GdipFillRectangle(self.g, b, r.x, r.y, r.w, r.h);
-        });
-    }
-
     pub fn fill_round_rect(&self, r: Rect, radius: f32, color: Color) {
         let path = self.rounded_path(r, radius);
         self.with_brush(color, |b| unsafe {
@@ -216,28 +223,29 @@ impl Canvas {
     }
 
     pub fn fill_circle(&self, cx: f32, cy: f32, radius: f32, color: Color) {
-        let (x, y, d) = (self.s(cx - radius), self.s(cy - radius), self.s(radius * 2.0));
+        let (x, y, d) = (
+            self.s(cx - radius),
+            self.s(cy - radius),
+            self.s(radius * 2.0),
+        );
         self.with_brush(color, |b| unsafe {
             GdipFillEllipse(self.g, b, x, y, d, d);
         });
     }
 
-    pub fn arc(&self, r: Rect, start: f32, sweep: f32, width: f32, color: Color) {
-        let r = self.r(r);
-        let mut path = ptr::null_mut();
-        unsafe {
-            GdipCreatePath(FillModeAlternate, &mut path);
-            GdipAddPathArc(path, r.x, r.y, r.w, r.h, start, sweep);
-        }
-        self.with_pen(color, width, |p| unsafe {
-            GdipDrawPath(self.g, p, path);
-        });
-        unsafe { GdipDeletePath(path) };
-    }
-
     pub fn line(&self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
         let (x1, y1, x2, y2) = (self.s(x1), self.s(y1), self.s(x2), self.s(y2));
         self.with_pen(color, width, |p| unsafe {
+            GdipDrawLine(self.g, p, x1, y1, x2, y2);
+        });
+    }
+
+    pub fn dashed_line(&self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+        let (x1, y1, x2, y2) = (self.s(x1), self.s(y1), self.s(x2), self.s(y2));
+        self.with_pen(color, width, |p| unsafe {
+            GdipSetPenStartCap(p, LineCapFlat);
+            GdipSetPenEndCap(p, LineCapFlat);
+            GdipSetPenDashStyle(p, DashStyleDash);
             GdipDrawLine(self.g, p, x1, y1, x2, y2);
         });
     }
@@ -260,7 +268,13 @@ impl Canvas {
     }
 
     fn points(&self, points: &[(f32, f32)]) -> Vec<PointF> {
-        points.iter().map(|&(x, y)| PointF { X: self.s(x), Y: self.s(y) }).collect()
+        points
+            .iter()
+            .map(|&(x, y)| PointF {
+                X: self.s(x),
+                Y: self.s(y),
+            })
+            .collect()
     }
 
     fn font(&self, size: f32, weight: Weight) -> *mut GpFont {
@@ -280,7 +294,12 @@ impl Canvas {
         let font = self.font(size, weight);
         let text16: Vec<u16> = text.encode_utf16().collect();
         let layout = self.r(r);
-        let rect = RectF { X: layout.x, Y: layout.y, Width: layout.w, Height: layout.h };
+        let rect = RectF {
+            X: layout.x,
+            Y: layout.y,
+            Width: layout.w,
+            Height: layout.h,
+        };
         unsafe {
             GdipSetStringFormatAlign(
                 self.format,
@@ -292,7 +311,15 @@ impl Canvas {
             )
         };
         self.with_brush(color, |b| unsafe {
-            GdipDrawString(self.g, text16.as_ptr(), text16.len() as i32, font, &rect, self.format, b);
+            GdipDrawString(
+                self.g,
+                text16.as_ptr(),
+                text16.len() as i32,
+                font,
+                &rect,
+                self.format,
+                b,
+            );
         });
     }
 
@@ -300,7 +327,12 @@ impl Canvas {
     pub fn measure(&self, text: &str, size: f32, weight: Weight) -> f32 {
         let font = self.font(size, weight);
         let text16: Vec<u16> = text.encode_utf16().collect();
-        let layout = RectF { X: 0.0, Y: 0.0, Width: 10_000.0, Height: 10_000.0 };
+        let layout = RectF {
+            X: 0.0,
+            Y: 0.0,
+            Width: 10_000.0,
+            Height: 10_000.0,
+        };
         let mut bounds = RectF::default();
         unsafe {
             GdipSetStringFormatAlign(self.format, StringAlignmentNear);

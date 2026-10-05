@@ -52,7 +52,12 @@ impl Frame {
             (value >= 10).then_some(digits[1]),
             Some(digits[2]),
         ];
-        Some(Self { digits, symbol, bar: ak::bar_level(bar), alarm: status.alarm_active })
+        Some(Self {
+            digits,
+            symbol,
+            bar: ak::bar_level(bar),
+            alarm: status.alarm_active,
+        })
     }
 }
 
@@ -77,18 +82,37 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     for i in 0..3 {
         let digit = frame.and_then(|f| f.digits[i]);
         let mask = digit.map_or(0, |d| DIGIT_SEGMENTS[d as usize]);
-        draw_digit(c, x0 + i as f32 * (digit_w + gap), y0, digit_w, digit_h, mask, lit);
+        draw_digit(
+            c,
+            x0 + i as f32 * (digit_w + gap),
+            y0,
+            digit_w,
+            digit_h,
+            mask,
+            lit,
+        );
     }
 
     // Unit symbols, stacked next to the digits.
     let sx = x0 + 3.0 * digit_w + 2.0 * gap + 16.0;
     let symbol = frame.map(|f| f.symbol);
-    for (i, (label, s)) in [("°C", Symbol::Celsius), ("°F", Symbol::Fahrenheit), ("%", Symbol::Percent)]
-        .into_iter()
-        .enumerate()
+    for (i, (label, s)) in [
+        ("°C", Symbol::Celsius),
+        ("°F", Symbol::Fahrenheit),
+        ("%", Symbol::Percent),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let r = Rect::new(sx, y0 + i as f32 * 18.0, symbols_w, 18.0);
-        c.text(label, r, 14.0, Weight::Semibold, lit(symbol == Some(s)), Align::Left);
+        c.text(
+            label,
+            r,
+            14.0,
+            Weight::Semibold,
+            lit(symbol == Some(s)),
+            Align::Left,
+        );
     }
 
     // Bar: ten segments under the digits, red while the alarm is on.
@@ -134,13 +158,13 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, mask: u8, lit: impl Fn
         ]
     };
     let segments = [
-        hseg(x, y),                       // a
-        vseg(x + w, y, half),             // b
-        vseg(x + w, y + half, half),      // c
-        hseg(x, y + h),                   // d
-        vseg(x, y + half, half),          // e
-        vseg(x, y, half),                 // f
-        hseg(x, y + half),                // g
+        hseg(x, y),                  // a
+        vseg(x + w, y, half),        // b
+        vseg(x + w, y + half, half), // c
+        hseg(x, y + h),              // d
+        vseg(x, y + half, half),     // e
+        vseg(x, y, half),            // f
+        hseg(x, y + half),           // g
     ];
     for (i, points) in segments.iter().enumerate() {
         c.fill_polygon(points, lit(mask & (1 << i) != 0));
