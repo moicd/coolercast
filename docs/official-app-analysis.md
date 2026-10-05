@@ -1,8 +1,7 @@
 # What the official DeepCool app runs
 
-Snapshot of the official DeepCool software (v1.2.14) on a Windows 11 machine with an
-AK400 DIGITAL, an Intel Core i5-9400F and an AMD Radeon RX 550, measured right after start-up with
-the main window closed to the tray.
+Snapshot of the official DeepCool software (v1.2.14) on a Windows 11 test system with an AK series
+cooler, measured right after start-up with the main window closed to the tray.
 
 ## Processes
 
