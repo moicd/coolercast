@@ -55,6 +55,7 @@ const ID_SETTINGS: usize = 90;
 const ID_MODE_TEMPERATURE: usize = 100;
 const ID_MODE_USAGE: usize = 101;
 const ID_MODE_AUTO: usize = 102;
+const ID_MODE_CUSTOM: usize = 103;
 const ID_UNIT_CELSIUS: usize = 110;
 const ID_UNIT_FAHRENHEIT: usize = 111;
 const ID_ALARM: usize = 120;
@@ -343,6 +344,13 @@ fn show_menu(hwnd: HWND) {
             online && config.mode == Mode::Auto,
             online,
         );
+        item(
+            modes,
+            ID_MODE_CUSTOM,
+            "Custom value",
+            online && config.mode == Mode::Custom,
+            online,
+        );
         AppendMenuW(menu, MF_POPUP, modes as usize, wide("Display").as_ptr());
 
         let units = CreatePopupMenu();
@@ -390,6 +398,7 @@ fn show_menu(hwnd: HWND) {
         ID_MODE_TEMPERATURE => Some(("mode", "temperature")),
         ID_MODE_USAGE => Some(("mode", "usage")),
         ID_MODE_AUTO => Some(("mode", "auto")),
+        ID_MODE_CUSTOM => Some(("mode", "custom")),
         ID_UNIT_CELSIUS => Some(("unit", "celsius")),
         ID_UNIT_FAHRENHEIT => Some(("unit", "fahrenheit")),
         ID_ALARM => Some(("alarm", if alarm { "off" } else { "on" })),

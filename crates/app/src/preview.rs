@@ -1,7 +1,7 @@
 //! Simulated cooler display: three seven-segment digits, the unit symbols and the 10-step bar,
 //! lit the same way as the real one.
 
-use coolercast_core::config::Unit;
+use coolercast_core::config::{Config, Symbol, Unit};
 use coolercast_core::device::ak;
 use coolercast_core::ipc::{Shown, Status};
 
@@ -21,16 +21,11 @@ pub struct Frame {
     pub alarm: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Symbol {
-    Celsius,
-    Fahrenheit,
-    Percent,
-}
-
 impl Frame {
     pub fn from_status(status: &Status) -> Option<Self> {
+        let alarm = status.alarm_active;
         let (value, bar, symbol) = match (status.shown?, status.cpu_temp) {
+            (Shown::Custom, _) => return Some(Self::custom(&status.config, alarm)),
             (Shown::Temperature, Some(t)) => {
                 let unit = status.config.unit;
                 let symbol = match unit {
@@ -44,7 +39,25 @@ impl Frame {
                 (usage, usage, Symbol::Percent)
             }
         };
-        let value = ak::display_value(value);
+        Some(Self::new(
+            ak::display_value(value),
+            symbol,
+            ak::bar_level(bar),
+            alarm,
+        ))
+    }
+
+    /// The custom value of `config`, as the cooler shows it in custom mode.
+    pub fn custom(config: &Config, alarm: bool) -> Self {
+        Self::new(
+            config.custom_value.min(999),
+            config.custom_symbol,
+            config.custom_bar.clamp(1, 10),
+            alarm,
+        )
+    }
+
+    fn new(value: u16, symbol: Symbol, bar: u8, alarm: bool) -> Self {
         let digits = [value / 100, value / 10 % 10, value % 10].map(|d| d as u8);
         // Leading zeros stay dark, like on the cooler.
         let digits = [
@@ -52,12 +65,12 @@ impl Frame {
             (value >= 10).then_some(digits[1]),
             Some(digits[2]),
         ];
-        Some(Self {
+        Self {
             digits,
             symbol,
-            bar: ak::bar_level(bar),
-            alarm: status.alarm_active,
-        })
+            bar,
+            alarm,
+        }
     }
 }
 
@@ -69,6 +82,10 @@ const DIGIT_SEGMENTS: [u8; 10] = [
 
 pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     c.fill_round_rect(area, 10.0, PANEL);
+    // Reflection on the cover glass, over the top of the panel.
+    let white = Color::rgb(0xFF, 0xFF, 0xFF);
+    let sheen = Rect::new(area.x, area.y, area.w, area.h * 0.5);
+    c.fill_round_rect_v(sheen, 10.0, white.alpha(0x14), white.alpha(0x00));
 
     let digit_w = 30.0;
     let digit_h = 54.0;
@@ -202,6 +219,18 @@ mod tests {
         assert_eq!(f.bar, 10);
         let f = Frame::from_status(&status(Shown::Usage, 47.0, 0.2)).unwrap();
         assert_eq!(f.digits, [None, None, Some(0)]);
+    }
+
+    #[test]
+    fn custom_frame_shows_the_config() {
+        let mut s = status(Shown::Custom, 47.0, 3.0);
+        s.config.custom_value = 7;
+        s.config.custom_symbol = Symbol::Percent;
+        s.config.custom_bar = 9;
+        let f = Frame::from_status(&s).unwrap();
+        assert_eq!(f.digits, [None, None, Some(7)]);
+        assert_eq!(f.symbol, Symbol::Percent);
+        assert_eq!(f.bar, 9);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Colors that follow the Windows light/dark app setting.
+//! Colors that follow the Windows light/dark app setting, opaque or as glass over the window
+//! backdrop.
 
 use std::ptr;
 
@@ -11,8 +12,18 @@ use crate::gfx::Color;
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
+    /// Translucent colors over the system backdrop instead of opaque ones.
+    pub glass: bool,
     pub background: Color,
-    pub card: Color,
+    /// What the window is cleared with: `background`, or a light tint over the backdrop.
+    pub backdrop: Color,
+    /// Card fill, as a vertical gradient (equal when opaque).
+    pub card_top: Color,
+    pub card_bottom: Color,
+    /// Card outline, as a vertical gradient: a lit top edge on glass.
+    pub edge_top: Color,
+    pub edge_bottom: Color,
+    /// Dividers between rows.
     pub border: Color,
     pub text: Color,
     pub text_dim: Color,
@@ -29,19 +40,25 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn current() -> Self {
-        if apps_use_dark_theme() {
+    pub fn current(glass: bool) -> Self {
+        let theme = if apps_use_dark_theme() {
             Self::dark()
         } else {
             Self::light()
-        }
+        };
+        if glass { theme.glass() } else { theme }
     }
 
     fn dark() -> Self {
         Self {
             dark: true,
+            glass: false,
             background: Color::rgb(0x20, 0x20, 0x20),
-            card: Color::rgb(0x2B, 0x2B, 0x2B),
+            backdrop: Color::rgb(0x20, 0x20, 0x20),
+            card_top: Color::rgb(0x2B, 0x2B, 0x2B),
+            card_bottom: Color::rgb(0x2B, 0x2B, 0x2B),
+            edge_top: Color::rgb(0x3A, 0x3A, 0x3A),
+            edge_bottom: Color::rgb(0x3A, 0x3A, 0x3A),
             border: Color::rgb(0x3A, 0x3A, 0x3A),
             text: Color::rgb(0xF2, 0xF2, 0xF2),
             text_dim: Color::rgb(0xA8, 0xA8, 0xA8),
@@ -61,8 +78,13 @@ impl Theme {
     fn light() -> Self {
         Self {
             dark: false,
+            glass: false,
             background: Color::rgb(0xF3, 0xF3, 0xF3),
-            card: Color::rgb(0xFF, 0xFF, 0xFF),
+            backdrop: Color::rgb(0xF3, 0xF3, 0xF3),
+            card_top: Color::rgb(0xFF, 0xFF, 0xFF),
+            card_bottom: Color::rgb(0xFF, 0xFF, 0xFF),
+            edge_top: Color::rgb(0xE5, 0xE5, 0xE5),
+            edge_bottom: Color::rgb(0xE5, 0xE5, 0xE5),
             border: Color::rgb(0xE5, 0xE5, 0xE5),
             text: Color::rgb(0x1A, 0x1A, 0x1A),
             text_dim: Color::rgb(0x61, 0x61, 0x61),
@@ -76,6 +98,42 @@ impl Theme {
             alarm: Color::rgb(0xDC, 0x26, 0x26),
             usage_line: Color::rgb(0x25, 0x63, 0xEB),
             grid: Color::rgb(0xEC, 0xEC, 0xEC),
+        }
+    }
+
+    /// Translucent variant: cards and controls let the blurred backdrop through, with a lit top
+    /// edge and a soft top-to-bottom fade.
+    fn glass(self) -> Self {
+        let white = Color::rgb(0xFF, 0xFF, 0xFF);
+        let black = Color::rgb(0, 0, 0);
+        if self.dark {
+            Self {
+                glass: true,
+                backdrop: Color::rgb(0x10, 0x10, 0x10).alpha(0x48),
+                card_top: Color::rgb(0x50, 0x50, 0x50).alpha(0x8C),
+                card_bottom: Color::rgb(0x2C, 0x2C, 0x2C).alpha(0x78),
+                edge_top: white.alpha(0x5C),
+                edge_bottom: white.alpha(0x12),
+                border: white.alpha(0x16),
+                control: white.alpha(0x14),
+                control_hover: white.alpha(0x26),
+                grid: white.alpha(0x14),
+                ..self
+            }
+        } else {
+            Self {
+                glass: true,
+                backdrop: white.alpha(0x38),
+                card_top: white.alpha(0xD0),
+                card_bottom: white.alpha(0x94),
+                edge_top: white,
+                edge_bottom: black.alpha(0x16),
+                border: black.alpha(0x12),
+                control: black.alpha(0x0C),
+                control_hover: black.alpha(0x18),
+                grid: black.alpha(0x10),
+                ..self
+            }
         }
     }
 
