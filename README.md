@@ -25,15 +25,14 @@ Task Manager.</sub>
 
 ## Download
 
-Get the latest version from the [releases page](https://github.com/moicd/coolercast/releases/latest):
-
-| System | File |
+| System | Download |
 |---|---|
-| Windows 10/11 (installer) | `coolercast-<version>-windows-x64.msi` |
-| Windows, without installing | `coolercast-<version>-windows-x64.zip` |
-| Linux | `coolercast-<version>-linux-x86_64.tar.gz` |
+| Windows 10 / 11 | [**coolercast-windows-x64.msi**](https://github.com/moicd/coolercast/releases/latest/download/coolercast-windows-x64.msi) (installer, recommended) |
+| Windows, portable | [coolercast-windows-x64.zip](https://github.com/moicd/coolercast/releases/latest/download/coolercast-windows-x64.zip) |
+| Linux (x86-64, systemd) | [coolercast-linux-x86_64.tar.gz](https://github.com/moicd/coolercast/releases/latest/download/coolercast-linux-x86_64.tar.gz) |
 
-`SHA256SUMS.txt` lists the checksums of every file.
+These links always point to the latest version. Older versions, release notes and
+`SHA256SUMS.txt` are on the [releases page](https://github.com/moicd/coolercast/releases).
 
 ## Features
 
@@ -44,7 +43,8 @@ Get the latest version from the [releases page](https://github.com/moicd/coolerc
   of the cooler display and the last two minutes of temperature and usage (translucent Acrylic glass
   on Windows 11).
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
-- No runtime, no telemetry, no network access. The Linux build is a single static binary.
+- No runtime and no telemetry. The only network access is the **Check for updates** button, which
+  asks GitHub for the latest version when you click it. The Linux build is a single static binary.
 
 ## Supported hardware
 
@@ -60,52 +60,137 @@ Other DeepCool products use different protocols. Contributions are welcome; see
 
 | Platform | CPU temperature from | Status |
 |---|---|---|
-| Windows x64, Intel | PawnIO, package thermal MSR | Tested |
-| Windows x64, AMD Ryzen | PawnIO, Tctl over SMN | Experimental |
+| Windows, Intel | PawnIO, package thermal MSR | Tested |
+| Windows, AMD Ryzen | PawnIO, Tctl over SMN | Experimental |
 | Linux | kernel hwmon (`k10temp`, `coretemp`) | Installs in CI, untested on a cooler |
 
 ## Install on Windows
 
-1. Close the official DeepCool app and disable it at startup (or uninstall it). Both apps write to
-   the same device and would fight over the display.
-2. Install [PawnIO](https://pawnio.eu/) for the CPU temperature: `winget install namazso.PawnIO`.
-   Without it, CoolerCast shows CPU usage only. PawnIO is a signed, open-source driver also used by
-   LibreHardwareMonitor and FanControl; if the official DeepCool app was installed, you probably
-   have it already.
-3. Run the `.msi` installer. It installs CoolerCast to `C:\Program Files\CoolerCast`, starts the
-   service and adds **CoolerCast** to the Start menu.
-4. Open CoolerCast from the Start menu to change the settings, and enable **Start with Windows** if
-   you want the tray icon at sign-in.
+### 1. Before you start
 
-Uninstall it from **Settings → Apps**. Your settings stay in `C:\ProgramData\CoolerCast`.
+- **Remove the official DeepCool app.** Both apps write to the cooler and would fight over the
+  display. Uninstall it from **Settings → Apps → Installed apps → DeepCool**, or at least close it
+  from its tray icon and turn it off in **Settings → Apps → Startup**.
+- **Make sure the cooler's USB cable is connected** to a USB 2.0 header on the motherboard. The
+  display only shows what the PC sends through that cable.
 
-The binaries are not code-signed yet (see [CODE_SIGNING.md](CODE_SIGNING.md)), so SmartScreen may
-warn the first time: choose **More info → Run anyway**.
+### 2. Install PawnIO (for the CPU temperature)
+
+Windows does not let programs read the CPU temperature without a driver. CoolerCast uses
+[PawnIO](https://pawnio.eu/), a small signed open-source driver that LibreHardwareMonitor and
+FanControl also use. If you had the official DeepCool app, PawnIO is probably installed already.
+
+1. Right-click the Start button and open **Terminal**.
+2. Run this command and accept the prompts:
+
+   ```bash
+   winget install namazso.PawnIO
+   ```
+
+Without PawnIO, CoolerCast still works but shows the CPU usage instead of the temperature.
+
+### 3. Install CoolerCast
+
+1. Download [**coolercast-windows-x64.msi**](https://github.com/moicd/coolercast/releases/latest/download/coolercast-windows-x64.msi).
+2. Double-click the file. CoolerCast is not code-signed yet, so Windows may show
+   **"Windows protected your PC"**: click **More info → Run anyway**.
+3. Accept the license, click **Install** and answer **Yes** when Windows asks for permission.
+
+That is all: the service starts right away and starts with Windows from now on. Within a few
+seconds the cooler shows the CPU temperature.
+
+### 4. Change the settings (optional)
+
+Open **CoolerCast** from the Start menu. From there you can choose what the display shows, the unit,
+the alarm, and turn on **Start with Windows** to keep the CoolerCast icon in the taskbar's
+notification area (click it to open the window again).
+
+### Update
+
+Click **Check for updates** in the CoolerCast window. If there is a new version, click
+**Download** and run the new `.msi`: it replaces the old version and keeps your settings.
+
+### Uninstall
+
+**Settings → Apps → Installed apps → CoolerCast → Uninstall.** Your settings stay in
+`C:\ProgramData\CoolerCast`; delete that folder too if you want to remove everything.
+
+### If something does not work
+
+| Problem | What to do |
+|---|---|
+| The window says **No cooler connected** | Check the USB cable to the motherboard header and that the official app is closed. |
+| **Temperature unavailable** | Install PawnIO (step 2), then restart the PC. |
+| **Service not running** | Reinstall the `.msi`, or run `coolercast start` in a terminal opened as administrator. |
+| Something else | The service log is at `C:\ProgramData\CoolerCast\coolercast.log`. [Open an issue](https://github.com/moicd/coolercast/issues) and attach it. |
 
 <details>
-<summary>Portable zip instead of the installer</summary>
+<summary>Portable version (zip) instead of the installer</summary>
 
-Extract the zip to a permanent folder, for example `C:\Program Files\CoolerCast`, and in a terminal
-opened **as administrator** in that folder run `coolercast install`. Remove it with
-`coolercast uninstall` and delete the folder.
+1. Extract the zip to a permanent folder, for example `C:\Program Files\CoolerCast`.
+2. Open a terminal **as administrator** in that folder and run `.\coolercast.exe install`.
+3. Start `coolercast-app.exe` for the settings window.
+
+To remove it, run `.\coolercast.exe uninstall` as administrator and delete the folder.
 </details>
 
 ## Install on Linux
 
-Requires systemd.
+### 1. Before you start
+
+- You need a distribution with **systemd** (Ubuntu, Debian, Fedora, Arch, openSUSE, Mint…) on an
+  x86-64 PC, and `sudo` rights.
+- **Make sure the cooler's USB cable is connected** to a USB 2.0 header on the motherboard.
+- There is no settings window on Linux: everything is done with the `coolercast` command.
+
+### 2. Install
+
+Open a terminal and run these commands one by one:
 
 ```bash
-tar xzf coolercast-*-linux-x86_64.tar.gz
-cd coolercast-*-linux-x86_64/
-sudo ./install.sh
+curl -LO https://github.com/moicd/coolercast/releases/latest/download/coolercast-linux-x86_64.tar.gz
 ```
 
-The script installs `/usr/local/bin/coolercast`, a systemd service and a udev rule that lets your
-user talk to the cooler, then starts the service. Remove everything with
-`sudo ./install.sh --uninstall`.
+```bash
+tar xzf coolercast-linux-x86_64.tar.gz
+```
 
-The temperature comes from the kernel's hwmon drivers: `k10temp` (AMD) and `coretemp` (Intel) are
-loaded by default on most distributions. Check what CoolerCast found with `coolercast list`.
+```bash
+sudo coolercast/install.sh
+```
+
+The script copies the program to `/usr/local/bin/coolercast`, adds a udev rule so your user can talk
+to the cooler, and installs and starts a systemd service that also starts at boot. You can delete the
+downloaded files afterwards.
+
+### 3. Check that it works
+
+```bash
+coolercast status
+```
+
+It should list your cooler and the CPU temperature. Change what the display shows with, for
+example, `coolercast set mode=auto` or `coolercast set unit=fahrenheit` (see [Settings](#settings)).
+
+### Update
+
+Repeat the three commands of step 2: the script replaces the old version and keeps your settings.
+
+### Uninstall
+
+```bash
+sudo /usr/local/share/coolercast/install.sh --uninstall
+```
+
+Your settings stay in `/etc/coolercast`; delete that folder too if you want to remove everything.
+
+### If something does not work
+
+| Problem | What to do |
+|---|---|
+| `coolercast status` lists no cooler | Check the USB cable, then run `coolercast list` to see whether the cooler is detected. |
+| Temperature unavailable | Your CPU's temperature driver is not loaded. Run `sudo modprobe k10temp` (AMD) or `sudo modprobe coretemp` (Intel). |
+| Something else | Read the log with `journalctl -u coolercast` and [open an issue](https://github.com/moicd/coolercast/issues). |
 
 ## Usage
 
@@ -119,7 +204,7 @@ coolercast set key=value     Change a setting, e.g. `set mode=auto unit=fahrenhe
 ```
 
 On Windows, `coolercast install`, `uninstall`, `start` and `stop` manage the service (as
-administrator). On Linux, use `systemctl` (`sudo systemctl restart coolercast`) and
+administrator; the `.msi` installer already does this for you). On Linux, use `systemctl` (`sudo systemctl restart coolercast`) and
 `journalctl -u coolercast` for the log.
 
 ### Settings

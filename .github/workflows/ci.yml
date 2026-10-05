@@ -94,15 +94,15 @@ jobs:
           $version = '${{ steps.version.outputs.version }}'
           New-Item -ItemType Directory -Force dist | Out-Null
           wix build packaging/windows/coolercast.wxs -arch x64 -ext WixToolset.UI.wixext `
-            -d Version=$version -d BinDir=bin -o "dist/coolercast-$version-windows-x64.msi"
+            -d Version=$version -d BinDir=bin -o dist/coolercast-windows-x64.msi
           if ($LASTEXITCODE) { throw "wix build failed" }
-          Remove-Item "dist/coolercast-$version-windows-x64.wixpdb"
+          Remove-Item dist/coolercast-windows-x64.wixpdb
 
           $portable = "portable/CoolerCast"
           New-Item -ItemType Directory -Force "$portable/modules" | Out-Null
           Copy-Item bin/*.exe, README.md, LICENSE $portable
           Copy-Item third_party/pawnio-modules/*.bin, third_party/pawnio-modules/COPYING "$portable/modules"
-          Compress-Archive -Path "$portable/*" -DestinationPath "dist/coolercast-$version-windows-x64.zip"
+          Compress-Archive -Path "$portable/*" -DestinationPath dist/coolercast-windows-x64.zip
 
       - uses: actions/upload-artifact@v7
         id: installers
@@ -129,7 +129,7 @@ jobs:
       - name: Test the installer
         shell: pwsh
         run: |
-          $msi = Resolve-Path "dist/coolercast-*-windows-x64.msi"
+          $msi = Resolve-Path dist/coolercast-windows-x64.msi
           $p = Start-Process msiexec -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
           if ($p.ExitCode) { Get-Content install.log -Tail 50; throw "install failed: $($p.ExitCode)" }
           Start-Sleep -Seconds 3
@@ -174,13 +174,11 @@ jobs:
 
       - name: Package
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "coolercast") | .version')
-          name="coolercast-$version-linux-x86_64"
-          mkdir -p "pkg/$name" dist
-          cp "target/$TARGET/release/coolercast" packaging/linux/* README.md LICENSE "pkg/$name/"
-          chmod 755 "pkg/$name/coolercast" "pkg/$name/install.sh"
-          tar -C pkg -czf "dist/$name.tar.gz" "$name"
-          echo "PKG=pkg/$name" >> "$GITHUB_ENV"
+          mkdir -p pkg/coolercast dist
+          cp "target/$TARGET/release/coolercast" packaging/linux/* README.md LICENSE pkg/coolercast/
+          chmod 755 pkg/coolercast/coolercast pkg/coolercast/install.sh
+          tar -C pkg -czf dist/coolercast-linux-x86_64.tar.gz coolercast
+          echo "PKG=pkg/coolercast" >> "$GITHUB_ENV"
 
       - name: Test the install script
         run: |
@@ -192,8 +190,10 @@ jobs:
           coolercast set mode=usage
           coolercast status | grep -E '^mode +usage'
           sudo journalctl -u coolercast --no-pager | tail -n 20
-          sudo "$PKG/install.sh" --uninstall
+          test -x /usr/local/share/coolercast/install.sh
+          sudo /usr/local/share/coolercast/install.sh --uninstall
           ! systemctl is-active coolercast
+          test ! -e /usr/local/bin/coolercast
 
       - uses: actions/upload-artifact@v7
         with:

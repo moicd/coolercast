@@ -9,7 +9,8 @@
 //! so the tray icon alone stays as small as before.
 
 use std::cell::RefCell;
-use std::{mem, ptr};
+use std::sync::Mutex;
+use std::{mem, ptr, thread};
 
 use coolercast_core::config::{self, Config, Mode, Symbol, Unit};
 use coolercast_core::ipc::{HISTORY_LEN, Status};
@@ -34,11 +35,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_DOWN,
     VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, IDC_ARROW,
     IsIconic, KillTimer, LoadCursorW, LoadIconW, PostMessageW, RegisterClassW, SW_RESTORE,
     SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+    ShowWindow, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE,
     WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
@@ -47,6 +49,13 @@ use crate::autostart;
 use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight};
 use crate::preview::{self, Frame};
 use crate::theme::Theme;
+use crate::update::{self, Check};
+
+/// Posted by the update check thread when it has an answer.
+const WM_UPDATE_CHECKED: u32 = WM_APP + 10;
+
+/// The answer of the last update check, handed from its thread to the window.
+static UPDATE_RESULT: Mutex<Option<Check>> = Mutex::new(None);
 
 const CLASS: &str = "coolercast-settings";
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
@@ -78,6 +87,7 @@ const BACKSPACE: char = '\u{8}';
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
     Autostart,
+    Update,
     Mode,
     AutoInterval,
     Unit,
@@ -89,8 +99,9 @@ enum Control {
     Threshold,
 }
 
-const CONTROLS: [Control; 10] = [
+const CONTROLS: [Control; 11] = [
     Control::Autostart,
+    Control::Update,
     Control::Mode,
     Control::AutoInterval,
     Control::Unit,
@@ -110,6 +121,7 @@ enum Part {
     Switch,
     /// The number of a stepper that also takes typed digits.
     Field,
+    Button,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,7 +133,7 @@ struct Hit {
 impl Control {
     fn enabled(self, config: &Config, online: bool) -> bool {
         match self {
-            Control::Autostart => true,
+            Control::Autostart | Control::Update => true,
             _ if !online => false,
             Control::AutoInterval => config.mode == Mode::Auto,
             Control::CustomValue | Control::CustomSymbol | Control::CustomBar => {
@@ -239,7 +251,7 @@ impl Control {
             Control::CustomValue => ("custom_value", config.custom_value.to_string()),
             Control::CustomSymbol => ("custom_symbol", config.custom_symbol.to_string()),
             Control::CustomBar => ("custom_bar", config.custom_bar.to_string()),
-            Control::Autostart => return None,
+            Control::Autostart | Control::Update => return None,
         })
     }
 }
@@ -359,6 +371,32 @@ enum Effect {
     None,
     Send(Vec<(&'static str, String)>),
     Autostart(bool),
+    CheckUpdates,
+    Open(String),
+}
+
+/// Where the "Check for updates" button is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateState {
+    Idle,
+    Checking,
+    Done(Check),
+}
+
+impl UpdateState {
+    fn label(&self) -> String {
+        match self {
+            UpdateState::Idle => "Check for updates".into(),
+            UpdateState::Checking => "Checking…".into(),
+            UpdateState::Done(Check::UpToDate) => {
+                format!("Up to date · v{}", env!("CARGO_PKG_VERSION"))
+            }
+            UpdateState::Done(Check::Available { version, .. }) => {
+                format!("Download v{version}")
+            }
+            UpdateState::Done(Check::Failed(_)) => "Couldn't check · Retry".into(),
+        }
+    }
 }
 
 struct Settings {
@@ -371,6 +409,7 @@ struct Settings {
     /// Stepper changes not sent to the service yet.
     unsent: Vec<Control>,
     autostart: bool,
+    update: UpdateState,
     /// Clickable areas from the last paint.
     hits: Vec<(Hit, Rect)>,
     hover: Option<Hit>,
@@ -482,6 +521,7 @@ pub fn open() {
         theme,
         unsent: Vec::new(),
         autostart: autostart::enabled(),
+        update: UpdateState::Idle,
         hits: Vec::new(),
         hover: None,
         pressed: None,
@@ -599,6 +639,30 @@ fn run(effect: Effect) {
                 s.invalidate();
             });
         }
+        Effect::CheckUpdates => {
+            // HWND is not Send; the thread only posts a message back to it.
+            let Some(hwnd) = with(|s| s.hwnd as usize) else {
+                return;
+            };
+            thread::spawn(move || {
+                let result = update::check();
+                *UPDATE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+                unsafe { PostMessageW(hwnd as HWND, WM_UPDATE_CHECKED, 0, 0) };
+            });
+        }
+        Effect::Open(url) => {
+            let (verb, url) = (wide("open"), wide(&url));
+            unsafe {
+                ShellExecuteW(
+                    ptr::null_mut(),
+                    verb.as_ptr(),
+                    url.as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    SW_SHOWNORMAL,
+                )
+            };
+        }
     }
 }
 
@@ -658,6 +722,18 @@ unsafe extern "system" fn window_proc(
         WM_TIMER => {
             let effect = with(|s| s.timer(wparam)).unwrap_or(Effect::None);
             run(effect);
+        }
+        WM_UPDATE_CHECKED => {
+            let result = UPDATE_RESULT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(result) = result {
+                with(|s| {
+                    s.update = UpdateState::Done(result);
+                    s.invalidate();
+                });
+            }
         }
         WM_DPICHANGED => {
             let dpi = u32::from(wparam as u16);
@@ -897,6 +973,10 @@ impl Settings {
                         control,
                         part: Part::Switch,
                     }),
+                    Control::Update => self.activate(Hit {
+                        control,
+                        part: Part::Button,
+                    }),
                     // Enter confirms a typed number right away.
                     Control::CustomValue if key == VK_RETURN => {
                         self.typing = false;
@@ -934,7 +1014,7 @@ impl Settings {
                 self.step(control, forward);
                 Effect::None
             }
-            Control::Alarm | Control::Autostart => Effect::None,
+            Control::Alarm | Control::Autostart | Control::Update => Effect::None,
         }
     }
 
@@ -976,6 +1056,15 @@ impl Settings {
     fn activate(&mut self, hit: Hit) -> Effect {
         match (hit.control, hit.part) {
             (Control::Autostart, _) => Effect::Autostart(!self.autostart),
+            (Control::Update, _) => match &self.update {
+                UpdateState::Checking => Effect::None,
+                UpdateState::Done(Check::Available { url, .. }) => Effect::Open(url.clone()),
+                _ => {
+                    self.update = UpdateState::Checking;
+                    self.invalidate();
+                    Effect::CheckUpdates
+                }
+            },
             (control, Part::Segment(index)) => {
                 self.config = control.with_segment(&self.config, index);
                 self.send_with(control)
@@ -1045,9 +1134,10 @@ impl Settings {
             Level::Error => t.alarm,
         };
         c.fill_circle(PAD + 4.0, PAD + 41.0, 4.0, dot);
+        let update = self.draw_update_button(c, WIDTH - PAD, PAD + 41.0);
         c.text(
             &line,
-            Rect::new(PAD + 14.0, PAD + 32.0, WIDTH - 2.0 * PAD - 14.0, 18.0),
+            Rect::new(PAD + 14.0, PAD + 32.0, update.x - PAD - 26.0, 18.0),
             12.5,
             Weight::Regular,
             t.text_dim,
@@ -1362,6 +1452,7 @@ impl Settings {
             }
             Control::Alarm => self.draw_switch(c, control, self.config.alarm, right, cy, enabled),
             Control::Autostart => self.draw_switch(c, control, self.autostart, right, cy, enabled),
+            Control::Update => self.draw_update_button(c, right, cy),
             Control::CustomValue => {
                 let text = self.config.custom_value.to_string();
                 self.draw_stepper(c, control, &text, right, cy, enabled)
@@ -1492,6 +1583,51 @@ impl Settings {
         let area = Rect::new(label.x, track.y, track.right() - label.x, track.h);
         self.hits.push((hit, area.inset(0.0, -6.0)));
         track
+    }
+
+    /// The update button, right-aligned at `right`; filled with the accent when a new version
+    /// is waiting.
+    fn draw_update_button(&mut self, c: &Canvas, right: f32, cy: f32) -> Rect {
+        let t = self.theme;
+        let label = self.update.label();
+        let available = matches!(self.update, UpdateState::Done(Check::Available { .. }));
+        let weight = if available {
+            Weight::Semibold
+        } else {
+            Weight::Regular
+        };
+        let w = (c.measure(&label, 12.5, weight) + 24.0).round();
+        let r = Rect::new(right - w, cy - 13.0, w, 26.0);
+        let hit = Hit {
+            control: Control::Update,
+            part: Part::Button,
+        };
+        let (hovered, pressed) = self.state(hit);
+        let busy = self.update == UpdateState::Checking;
+        let (fill, text) = if available {
+            let fill = if hovered {
+                t.accent.alpha(0xD8)
+            } else {
+                t.accent
+            };
+            (fill, t.on_accent)
+        } else if pressed {
+            (t.border, t.text)
+        } else if hovered && !busy {
+            (t.control_hover, t.text)
+        } else {
+            (t.control, if busy { t.text_dim } else { t.text })
+        };
+        c.fill_round_rect(r, 13.0, fill);
+        if available {
+            self.gloss(c, r, 13.0);
+        }
+        c.text(&label, r, 12.5, weight, text, Align::Center);
+        if self.focus_visible && self.focus == Some(Control::Update) {
+            c.stroke_round_rect(r.inset(-3.0, -3.0), 16.0, 2.0, t.focus);
+        }
+        self.hits.push((hit, r));
+        r
     }
 
     fn draw_stepper(
@@ -1660,6 +1796,10 @@ mod tests {
         };
         assert_eq!(next_focus(None, true, enabled), Some(Control::Autostart));
         assert_eq!(
+            next_focus(Some(Control::Autostart), true, enabled),
+            Some(Control::Update)
+        );
+        assert_eq!(
             next_focus(Some(Control::Mode), true, enabled),
             Some(Control::Unit)
         );
@@ -1735,6 +1875,7 @@ mod tests {
         assert!(Control::Threshold.enabled(&config, true));
         assert!(!Control::Mode.enabled(&config, false));
         assert!(Control::Autostart.enabled(&config, false));
+        assert!(Control::Update.enabled(&config, false));
         let auto = Control::Mode.with_segment(&config, 2);
         assert_eq!(auto.mode, Mode::Auto);
         assert!(Control::AutoInterval.enabled(&auto, true));

@@ -58,6 +58,10 @@ Read `.agents/skills/rust-best-practices/SKILL.md` before writing or reviewing R
   The Linux build uses only `std`; keep it that way (no libc/udev bindings).
   New crates need a strong reason; prefer `windows-sys` calls.
 - The engine wakes up once per refresh interval and must not allocate or poll in between.
+- No network access except the user-initiated update check in the app (`crates/app/src/update.rs`).
+  Never add automatic checks or telemetry; the privacy statement in `CODE_SIGNING.md` depends on it.
+- Windows binaries link the C runtime statically (`.cargo/config.toml`), so they run without the
+  Visual C++ Redistributable. Keep it that way.
 - Keep `unsafe` blocks small and next to the Win32 call they wrap.
 - Protocol logic (packet builders, sensor decoding, config parsing) is pure and unit tested;
   update `docs/protocol-*.md` when a protocol changes.

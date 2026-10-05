@@ -23,5 +23,8 @@ third-party files and are not signed by this project.
 ## Privacy policy
 
 This program will not transfer any information to other networked systems unless specifically
-requested by the user or the person installing or operating it. CoolerCast does not use the network
-at all: it talks to the cooler over USB and to its own service over a local named pipe.
+requested by the user or the person installing or operating it. CoolerCast talks to the cooler over
+USB and to its own service over a local named pipe or socket. The only network access is the
+**Check for updates** button of the Windows app: when you click it, the app asks
+`api.github.com` for the latest release of this repository. Nothing else is sent, and nothing is
+checked automatically.
