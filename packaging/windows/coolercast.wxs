@@ -1,0 +1,91 @@
+<!--
+  CoolerCast installer (WiX v4 or later):
+
+    wix build packaging/windows/coolercast.wxs -arch x64 -ext WixToolset.UI.wixext
+      -d Version=0.2.0 -d BinDir=target/release -o coolercast-x64.msi
+
+  Installs both executables and the PawnIO modules to Program Files, registers and starts the
+  service, and adds a Start menu shortcut. Settings in %ProgramData%\CoolerCast are kept on
+  uninstall.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="CoolerCast"
+           Manufacturer="CoolerCast"
+           Version="$(Version)"
+           UpgradeCode="5C4B8E2A-6F1D-4E7B-9A3C-2D8F0B1E6A47"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="CoolerCast installer" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of CoolerCast is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="coolercast.ico" SourceFile="assets\coolercast.ico" />
+    <Property Id="ARPPRODUCTICON" Value="coolercast.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/moicd/coolercast" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/moicd/coolercast/issues" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CoolerCast">
+        <Directory Id="MODULESFOLDER" Name="modules" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="Program" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="CoolerCastExe" Source="$(BinDir)\coolercast.exe" KeyPath="yes" />
+        <ServiceInstall Name="coolercast"
+                        DisplayName="CoolerCast"
+                        Description="Shows CPU temperature and usage on DeepCool cooler displays."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Arguments="service" />
+        <ServiceControl Id="CoolerCastService"
+                        Name="coolercast"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+      <Component>
+        <File Id="CoolerCastAppExe" Source="$(BinDir)\coolercast-app.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="CoolerCast"
+                    Description="CoolerCast settings"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="coolercast.ico"
+                    Advertise="yes" />
+        </File>
+      </Component>
+      <Component>
+        <File Source="README.md" />
+      </Component>
+      <Component>
+        <File Source="LICENSE" Name="LICENSE.txt" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="PawnIOModules" Directory="MODULESFOLDER">
+      <Component>
+        <File Source="third_party\pawnio-modules\IntelMSR.bin" />
+      </Component>
+      <Component>
+        <File Source="third_party\pawnio-modules\AMDFamily17.bin" />
+      </Component>
+      <Component>
+        <File Source="third_party\pawnio-modules\COPYING" Name="COPYING.txt" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="CoolerCast">
+      <ComponentGroupRef Id="Program" />
+      <ComponentGroupRef Id="PawnIOModules" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="packaging\windows\license.rtf" />
+  </Package>
+</Wix>

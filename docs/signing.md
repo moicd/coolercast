@@ -1,8 +1,9 @@
 # Release signing (maintainers)
 
-Releases are built by GitHub Actions and, once SignPath is configured, signed through
-[SignPath Foundation](https://signpath.org/) before they are published. Until then the release job
-publishes the unsigned build. See [CODE_SIGNING.md](../CODE_SIGNING.md) for the public policy.
+Windows releases are built by GitHub Actions and, once SignPath is configured, signed through
+[SignPath Foundation](https://signpath.org/) before they are published. Until then the release
+contains unsigned files. See [CODE_SIGNING.md](../CODE_SIGNING.md) for the public policy. Linux
+binaries are not signed; the release lists their SHA-256 checksums.
 
 ## One-time setup
 
@@ -11,7 +12,7 @@ publishes the unsigned build. See [CODE_SIGNING.md](../CODE_SIGNING.md) for the 
 3. Once approved, in SignPath:
    - Create the project with the slug `coolercast` and link the GitHub repository as a trusted
      build system.
-   - Add the artifact configuration below as the project's default configuration.
+   - Add the two artifact configurations below, with the slugs `executables` and `installers`.
    - Create a signing policy with the slug `release-signing`, using the SignPath Foundation
      certificate and manual approval.
    - Create a CI user, give it submitter rights on the policy and copy its API token.
@@ -19,15 +20,21 @@ publishes the unsigned build. See [CODE_SIGNING.md](../CODE_SIGNING.md) for the 
    - Secret `SIGNPATH_API_TOKEN`: the CI user's API token.
    - Variable `SIGNPATH_ORGANIZATION_ID`: the SignPath organization ID.
 
-Setting the variable is what turns signing on in [ci.yml](../.github/workflows/ci.yml).
+Setting the variable is what turns signing on in [ci.yml](../.github/workflows/ci.yml) for tags.
 
-### Artifact configuration
+### Artifact configurations
 
-The build uploads the release folder as a GitHub artifact; SignPath receives it as a zip file.
-Product name and version must match the metadata embedded by `assets/windows/resources.rs`.
+The `windows` job signs in two rounds, because the installers must contain signed executables:
+
+1. `executables`: `coolercast.exe` and `coolercast-app.exe`.
+2. `installers`: the MSI files built from the signed executables.
+
+Product name and version must match the metadata embedded by `assets/windows/resources.rs` and
+`packaging/windows/coolercast.wxs`.
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
+<!-- slug: executables -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <parameters>
     <parameter name="version" default-value="0.0.0" />
@@ -43,9 +50,25 @@ Product name and version must match the metadata embedded by `assets/windows/res
 </artifact-configuration>
 ```
 
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<!-- slug: installers -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" default-value="0.0.0" />
+  </parameters>
+  <zip-file>
+    <msi-file path="coolercast-${version}-windows-x64.msi">
+      <authenticode-sign />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>
+```
+
 ## Releasing
 
 1. Bump `version` in the workspace `Cargo.toml` and commit.
 2. Tag and push: `git tag -a vX.Y.Z -m "CoolerCast X.Y.Z"` and `git push origin vX.Y.Z`.
-3. The `release` job waits for the signing request to be approved in SignPath, then publishes the
-   GitHub release with the signed zip. The job fails if the tag does not match the crate version.
+3. The `windows` job waits for both signing requests to be approved in SignPath. The `release`
+   job then publishes the MSI installer, the portable zip, the Linux tarball and
+   `SHA256SUMS.txt`. The build fails if the tag does not match the crate version.

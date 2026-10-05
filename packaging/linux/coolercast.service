@@ -1,0 +1,31 @@
+[Unit]
+Description=CoolerCast: CPU temperature and usage on DeepCool cooler displays
+Documentation=https://github.com/moicd/coolercast
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/coolercast run
+Restart=on-failure
+RestartSec=5
+# /run/coolercast holds the control socket; /etc/coolercast the settings.
+RuntimeDirectory=coolercast
+RuntimeDirectoryMode=0755
+ConfigurationDirectory=coolercast
+ReadWritePaths=/etc/coolercast
+
+# The service only needs /dev/hidraw*, sysfs, /proc/stat and its own directories.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
