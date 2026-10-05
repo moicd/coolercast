@@ -1,14 +1,21 @@
-//! coolercast-app: tray icon showing the CPU temperature, with a menu to change the display
-//! settings of the CoolerCast service.
+//! coolercast-app: tray icon showing the CPU temperature and a settings window for the
+//! CoolerCast service.
+//!
+//! Started without arguments it opens the settings window; `--tray` (used at sign-in) starts
+//! with the icon only. A second start brings the running instance's window to the front.
 
 #![windows_subsystem = "windows"]
 
 mod autostart;
+mod gfx;
 mod icon;
+mod preview;
+mod theme;
+mod window;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::{mem, ptr};
+use std::{env, mem, ptr};
 
 use coolercast_core::config::{Mode, Unit};
 use coolercast_core::ipc::{self, Status};
@@ -26,21 +33,29 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
-    DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, HICON, HMENU, KillTimer,
-    MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN,
+    ASFW_ANY, AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW,
+    GetCursorPos, GetMessageW, HICON, HMENU, KillTimer, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_BOTTOMALIGN,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP,
     WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
+const CLASS: &str = "coolercast-app";
 const WM_TRAY: u32 = WM_APP + 1;
+/// Posted by a second instance: open the settings window.
+const WM_OPEN_SETTINGS: u32 = WM_APP + 2;
 const TIMER_ID: usize = 1;
 const REFRESH_MS: u32 = 2000;
+/// Faster polling while the settings window shows live values.
+const REFRESH_MS_WINDOW: u32 = 1000;
 
+const ID_SETTINGS: usize = 90;
 const ID_MODE_TEMPERATURE: usize = 100;
 const ID_MODE_USAGE: usize = 101;
 const ID_MODE_AUTO: usize = 102;
+const ID_MODE_CUSTOM: usize = 103;
 const ID_UNIT_CELSIUS: usize = 110;
 const ID_UNIT_FAHRENHEIT: usize = 111;
 const ID_ALARM: usize = 120;
@@ -63,11 +78,17 @@ thread_local! {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
+    let tray_only = env::args().skip(1).any(|arg| arg == "--tray");
+
     let mutex_name = wide(r"Local\coolercast-app");
     let _single_instance = unsafe { CreateMutexW(ptr::null(), 0, mutex_name.as_ptr()) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        if !tray_only {
+            show_running_instance();
+        }
         return;
     }
+    autostart::update();
 
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -77,7 +98,7 @@ fn main() {
         );
 
         let instance = GetModuleHandleW(ptr::null());
-        let class = wide("coolercast-app");
+        let class = wide(CLASS);
         let wc = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
@@ -113,7 +134,9 @@ fn main() {
             })
         });
         refresh(true);
-        SetTimer(hwnd, TIMER_ID, REFRESH_MS, None);
+        if !tray_only {
+            window::open();
+        }
 
         let mut msg: MSG = mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
@@ -131,8 +154,11 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match msg {
         WM_TIMER => refresh(false),
-        WM_TRAY if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) => show_menu(hwnd),
+        WM_TRAY if lparam as u32 == WM_LBUTTONUP => window::open(),
+        WM_TRAY if lparam as u32 == WM_RBUTTONUP => show_menu(hwnd),
+        WM_OPEN_SETTINGS => window::open(),
         WM_DESTROY => {
+            window::close();
             APP.with(|app| {
                 if let Some(app) = app.borrow_mut().take() {
                     unsafe {
@@ -165,13 +191,33 @@ fn notify_data(app: &App) -> NOTIFYICONDATAW {
     data
 }
 
-/// Polls the service and updates the icon. `add` (re)creates the tray entry.
+/// Asks the running instance to show its settings window.
+fn show_running_instance() {
+    let class = wide(CLASS);
+    let hwnd = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+    if !hwnd.is_null() {
+        unsafe {
+            // This process was just started by the user, so it may hand over the foreground.
+            AllowSetForegroundWindow(ASFW_ANY);
+            PostMessageW(hwnd, WM_OPEN_SETTINGS, 0, 0);
+        }
+    }
+}
+
+/// The last status received from the service.
+fn current_status() -> Option<Status> {
+    APP.with(|app| app.borrow().as_ref().and_then(|a| a.status.clone()))
+}
+
+/// Polls the service and updates the icon and the settings window. `add` (re)creates the tray
+/// entry.
 fn refresh(add: bool) {
     let status = ipc::query_status().ok();
+    let window_open = window::is_open();
     APP.with(|app| {
         let mut app = app.borrow_mut();
         let Some(app) = app.as_mut() else { return };
-        app.status = status;
+        app.status = status.clone();
 
         let key = icon_content(app.status.as_ref());
         if key != app.icon_key || app.icon.is_null() {
@@ -183,8 +229,18 @@ fn refresh(add: bool) {
             app.icon_key = key;
         }
         let data = notify_data(app);
-        unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data) };
+        let interval = if window_open {
+            REFRESH_MS_WINDOW
+        } else {
+            REFRESH_MS
+        };
+        unsafe {
+            Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data);
+            // Also restarts the timer, so the next poll is a full interval away.
+            SetTimer(app.hwnd, TIMER_ID, interval, None);
+        }
     });
+    window::update(status.as_ref());
 }
 
 fn icon_content(status: Option<&Status>) -> (String, icon::Rgb) {
@@ -256,6 +312,9 @@ fn show_menu(hwnd: HWND) {
             );
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+        item(menu, ID_SETTINGS, "Settings", false, true);
+        SetMenuDefaultItem(menu, ID_SETTINGS as u32, 0);
+        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
 
         let online = status.is_some();
         let config = status
@@ -283,6 +342,13 @@ fn show_menu(hwnd: HWND) {
             ID_MODE_AUTO,
             "Alternate",
             online && config.mode == Mode::Auto,
+            online,
+        );
+        item(
+            modes,
+            ID_MODE_CUSTOM,
+            "Custom value",
+            online && config.mode == Mode::Custom,
             online,
         );
         AppendMenuW(menu, MF_POPUP, modes as usize, wide("Display").as_ptr());
@@ -332,9 +398,14 @@ fn show_menu(hwnd: HWND) {
         ID_MODE_TEMPERATURE => Some(("mode", "temperature")),
         ID_MODE_USAGE => Some(("mode", "usage")),
         ID_MODE_AUTO => Some(("mode", "auto")),
+        ID_MODE_CUSTOM => Some(("mode", "custom")),
         ID_UNIT_CELSIUS => Some(("unit", "celsius")),
         ID_UNIT_FAHRENHEIT => Some(("unit", "fahrenheit")),
         ID_ALARM => Some(("alarm", if alarm { "off" } else { "on" })),
+        ID_SETTINGS => {
+            window::open();
+            None
+        }
         ID_AUTOSTART => {
             autostart::set(!autostart);
             None

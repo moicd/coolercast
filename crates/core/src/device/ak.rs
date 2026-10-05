@@ -4,9 +4,12 @@
 //! See `docs/protocol-ak-series.md` for details.
 
 use super::Reading;
-use crate::config::Unit;
+use crate::config::{Symbol, Unit};
 
 pub const PACKET_LEN: usize = 64;
+
+/// The meaningful bytes after the report ID: mode, bar, three digits and alarm.
+pub const PAYLOAD_LEN: usize = 6;
 
 /// Report ID of the regular models. SE variants have no report ID (0 on Windows).
 pub const REPORT_ID: u8 = 16;
@@ -34,25 +37,45 @@ pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
                 Unit::Celsius => MODE_CELSIUS,
                 Unit::Fahrenheit => MODE_FAHRENHEIT,
             };
-            (mode, unit.from_celsius(celsius), celsius)
+            (
+                mode,
+                display_value(unit.from_celsius(celsius)),
+                bar_level(celsius),
+            )
         }
-        Reading::Usage { percent } => (MODE_USAGE, percent, percent),
+        Reading::Usage { percent } => (MODE_USAGE, display_value(percent), bar_level(percent)),
+        Reading::Custom { value, symbol, bar } => {
+            let mode = match symbol {
+                Symbol::Celsius => MODE_CELSIUS,
+                Symbol::Fahrenheit => MODE_FAHRENHEIT,
+                Symbol::Percent => MODE_USAGE,
+            };
+            (mode, value.min(999), bar.clamp(1, 10))
+        }
     };
-    let value = display_value(value);
+    raw_packet(
+        report_id,
+        [
+            mode,
+            bar,
+            (value / 100) as u8,
+            (value / 10 % 10) as u8,
+            (value % 10) as u8,
+            alarm.into(),
+        ],
+    )
+}
 
+/// A report with the given payload bytes, unvalidated.
+pub fn raw_packet(report_id: u8, payload: [u8; PAYLOAD_LEN]) -> Packet {
     let mut p = [0; PACKET_LEN];
     p[0] = report_id;
-    p[1] = mode;
-    p[2] = bar_level(bar);
-    p[3] = (value / 100) as u8;
-    p[4] = (value / 10 % 10) as u8;
-    p[5] = (value % 10) as u8;
-    p[6] = alarm.into();
+    p[1..=PAYLOAD_LEN].copy_from_slice(&payload);
     p
 }
 
 /// Rounds a reading to what three digits can show.
-fn display_value(value: f32) -> u16 {
+pub fn display_value(value: f32) -> u16 {
     if value.is_nan() {
         0
     } else {
@@ -112,6 +135,24 @@ mod tests {
     fn alarm() {
         let p = packet(REPORT_ID, temp(92.0, Unit::Celsius), true);
         assert_eq!(head(&p), [16, 19, 9, 0, 9, 2, 1]);
+    }
+
+    #[test]
+    fn custom_value_is_shown_as_is() {
+        let custom = |value, symbol, bar| Reading::Custom { value, symbol, bar };
+        let p = packet(REPORT_ID, custom(123, Symbol::Percent, 7), false);
+        assert_eq!(head(&p), [16, 76, 7, 1, 2, 3, 0]);
+        let p = packet(REPORT_ID, custom(5, Symbol::Fahrenheit, 1), true);
+        assert_eq!(head(&p), [16, 35, 1, 0, 0, 5, 1]);
+        // Out of range values are clamped rather than sent to the firmware.
+        let p = packet(REPORT_ID, custom(1500, Symbol::Celsius, 0), false);
+        assert_eq!(head(&p), [16, 19, 1, 9, 9, 9, 0]);
+    }
+
+    #[test]
+    fn raw_packet_keeps_the_bytes() {
+        let p = raw_packet(REPORT_ID, [200, 0, 10, 11, 255, 2]);
+        assert_eq!(head(&p), [16, 200, 0, 10, 11, 255, 2]);
     }
 
     #[test]
