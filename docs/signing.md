@@ -58,7 +58,7 @@ Product name and version must match the metadata embedded by `assets/windows/res
     <parameter name="version" default-value="0.0.0" />
   </parameters>
   <zip-file>
-    <msi-file path="coolercast-${version}-windows-x64.msi">
+    <msi-file path="coolercast-windows-x64.msi">
       <authenticode-sign />
     </msi-file>
   </zip-file>

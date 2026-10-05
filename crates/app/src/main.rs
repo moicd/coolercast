@@ -19,6 +19,8 @@ mod theme;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
+mod update;
+#[cfg(windows)]
 mod window;
 
 #[cfg(windows)]
