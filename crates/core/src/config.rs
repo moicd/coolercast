@@ -70,9 +70,12 @@ impl Default for Config {
     }
 }
 
-const INTERVAL_MS: (u32, u32) = (250, 10_000);
-const AUTO_INTERVAL_S: (u32, u32) = (1, 3600);
-const ALARM_THRESHOLD: (u8, u8) = (40, 110);
+/// Allowed range of [`Config::interval_ms`].
+pub const INTERVAL_MS: (u32, u32) = (250, 10_000);
+/// Allowed range of [`Config::auto_interval_s`].
+pub const AUTO_INTERVAL_S: (u32, u32) = (1, 3600);
+/// Allowed range of [`Config::alarm_threshold`].
+pub const ALARM_THRESHOLD: (u8, u8) = (40, 110);
 
 impl Config {
     /// Loads the config file, falling back to defaults if it does not exist.
