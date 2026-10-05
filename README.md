@@ -15,8 +15,8 @@ Windows service written in Rust, plus an optional tray icon.
 | CPU while idle | several Chromium processes awake | 0 % (wakes once per second) |
 | Install size | ~1.2 GB | 0.7 MB |
 
-<sub>Measured on Windows 11 with an AK400 DIGITAL and an Intel Core i5-9400F. RAM for CoolerCast
-is the private working set shown by Task Manager.</sub>
+<sub>Measured on a Windows 11 test system. RAM for CoolerCast is the private working set shown by
+Task Manager.</sub>
 
 > [!NOTE]
 > This is an independent community project. It is not affiliated with, endorsed by or supported by

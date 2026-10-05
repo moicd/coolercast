@@ -60,7 +60,8 @@ byte is `0`, followed by the same payload. CoolerCast reads the report ID from t
 report descriptor (`HidP_GetValueCaps`) and uses it as D0, which covers both variants with a single
 code path.
 
-Observed on an `A400-DIGITAL` (PID `0x0001`): report ID `0`, `OutputReportByteLength` 65.
+For example, an `A400-DIGITAL` (PID `0x0001`) reports report ID `0` and an `OutputReportByteLength`
+of 65.
 
 ## Display modes of the official app
 
@@ -70,7 +71,6 @@ The official app stores a `mode` value per device: `1` temperature, `2` usage an
 
 ## Sources
 
-- Observed behaviour and the renderer code of the official DeepCool app (v1.2.14) installed on a
-  machine with an AK400 DIGITAL.
+- Observed behaviour and the renderer code of the official DeepCool app (v1.2.14).
 - The community-maintained mapping table in
   [Nortank12/deepcool-digital-linux](https://github.com/Nortank12/deepcool-digital-linux/blob/main/device-list/tables/ak-series.md).
