@@ -1,7 +1,7 @@
 //! The update loop: read sensors, build a report, send it to every cooler, sleep.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::{Config, Mode};
@@ -9,7 +9,6 @@ use crate::device::{self, Cooler, Reading};
 use crate::ipc::{HISTORY_LEN, Sample, Shown, Status};
 use crate::sensors::cpu_temp::CpuTemp;
 use crate::sensors::cpu_usage::CpuUsage;
-use crate::win::{Event, wait_any};
 use crate::{info, warn};
 
 /// How often to look for coolers while none is connected.
@@ -18,8 +17,38 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 pub struct Engine {
     state: Mutex<State>,
     config_path: Option<PathBuf>,
-    /// Signaled when settings change so the display updates immediately.
-    wake: Event,
+    signal: Signal,
+}
+
+/// Wakes the update loop early: to stop it, or to apply new settings right away.
+#[derive(Default)]
+struct Signal {
+    flags: Mutex<Flags>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Flags {
+    stop: bool,
+    wake: bool,
+}
+
+impl Signal {
+    fn raise(&self, update: impl FnOnce(&mut Flags)) {
+        update(&mut self.flags.lock().unwrap_or_else(|e| e.into_inner()));
+        self.changed.notify_all();
+    }
+
+    /// Sleeps for `timeout` or until raised. Returns `true` if the loop must stop.
+    fn wait(&self, timeout: Duration) -> bool {
+        let flags = self.flags.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut flags, _) = self
+            .changed
+            .wait_timeout_while(flags, timeout, |f| !f.stop && !f.wake)
+            .unwrap_or_else(|e| e.into_inner());
+        flags.wake = false;
+        flags.stop
+    }
 }
 
 struct State {
@@ -31,17 +60,17 @@ struct State {
 impl Engine {
     /// `config_path` is where settings changed over IPC are saved and where manual edits are
     /// picked up from.
-    pub fn new(config: Config, config_path: Option<PathBuf>) -> std::io::Result<Self> {
+    pub fn new(config: Config, config_path: Option<PathBuf>) -> Self {
         let config_modified = config_path.as_deref().and_then(modified);
-        Ok(Self {
+        Self {
             state: Mutex::new(State {
                 config,
                 config_modified,
                 status: Status::default(),
             }),
             config_path,
-            wake: Event::new(false)?,
-        })
+            signal: Signal::default(),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -83,12 +112,17 @@ impl Engine {
         info!("setting changed: {key} = {value}");
         state.config = config;
         drop(state);
-        self.wake.set();
+        self.signal.raise(|f| f.wake = true);
         "ok".into()
     }
 
-    /// Runs until `stop` is signaled.
-    pub fn run(&self, stop: &Event) {
+    /// Makes [`Engine::run`] return; safe to call from any thread.
+    pub fn stop(&self) {
+        self.signal.raise(|f| f.stop = true);
+    }
+
+    /// Runs until [`Engine::stop`] is called.
+    pub fn run(&self) {
         let mut usage = CpuUsage::new();
         let mut temp = match CpuTemp::open() {
             Ok(sensor) => {
@@ -164,7 +198,7 @@ impl Engine {
             }
 
             let interval = Duration::from_millis(config.interval_ms.into());
-            if wait_any(&[stop, &self.wake], interval) == Some(0) {
+            if self.signal.wait(interval) {
                 break;
             }
         }
@@ -325,8 +359,21 @@ mod tests {
     }
 
     #[test]
+    fn stop_wakes_the_loop() {
+        let signal = Signal::default();
+        signal.raise(|f| f.wake = true);
+        assert!(
+            !signal.wait(Duration::from_secs(5)),
+            "a wake-up is not a stop"
+        );
+        signal.raise(|f| f.stop = true);
+        assert!(signal.wait(Duration::from_secs(5)));
+        assert!(!Signal::default().wait(Duration::from_millis(1)));
+    }
+
+    #[test]
     fn set_request_updates_config() {
-        let engine = Engine::new(Config::default(), None).unwrap();
+        let engine = Engine::new(Config::default(), None);
         assert_eq!(engine.handle_request("set mode=usage"), "ok");
         assert_eq!(engine.status().config.mode, Mode::Usage);
         assert!(

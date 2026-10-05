@@ -1,4 +1,4 @@
-//! Minimal HID transport built directly on SetupAPI and the Win32 HID functions.
+//! HID transport for Windows, built directly on SetupAPI and the Win32 HID functions.
 
 use std::time::Duration;
 use std::{io, mem, ptr};
@@ -23,26 +23,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::core::GUID;
 
+use super::DeviceInfo;
 use crate::win::{Event, Handle, from_wide, wide};
 
 /// How long a single output report may take before the write is cancelled.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(1000);
-
-/// A HID top-level collection found during enumeration.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceInfo {
-    pub path: String,
-    pub vendor_id: u16,
-    pub product_id: u16,
-    pub product: String,
-    pub serial: String,
-    pub usage_page: u16,
-    pub usage: u16,
-    /// Size of an output report as Windows expects it, including the report ID byte.
-    pub output_report_len: usize,
-    /// Report ID of the output report, or 0 if the device does not use report IDs.
-    pub report_id: u8,
-}
 
 /// Lists the present HID collections of a vendor.
 pub fn enumerate(vendor_id: u16) -> io::Result<Vec<DeviceInfo>> {

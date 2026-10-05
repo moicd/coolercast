@@ -470,7 +470,7 @@ pub fn open() {
 
     let glass = enable_backdrop(hwnd);
     let theme = Theme::current(glass);
-    let status = crate::current_status();
+    let status = crate::tray::current_status();
     let state = Settings {
         hwnd,
         scale: unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0,
@@ -498,7 +498,7 @@ pub fn open() {
         SetForegroundWindow(hwnd);
     }
     // Poll faster while the window is open.
-    crate::refresh(false);
+    crate::tray::refresh(false);
 }
 
 pub fn close() {
@@ -590,7 +590,7 @@ fn run(effect: Effect) {
             for (key, value) in changes {
                 let _ = coolercast_core::ipc::set(key, &value);
             }
-            crate::refresh(false);
+            crate::tray::refresh(false);
         }
         Effect::Autostart(enable) => {
             autostart::set(enable);

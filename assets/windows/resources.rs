@@ -6,6 +6,10 @@ fn embed_windows_resources(description: &str, file_name: &str) {
     use std::path::{Path, PathBuf};
     use std::{env, fs};
 
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let assets = manifest_dir.join("../../assets");
     let icon = assets.join("coolercast.ico");
