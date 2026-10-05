@@ -3,5 +3,5 @@
 
 pub mod cpu_temp;
 pub mod cpu_usage;
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(windows)]
 pub mod pawnio;

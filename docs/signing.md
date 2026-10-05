@@ -26,7 +26,7 @@ Setting the variable is what turns signing on in [ci.yml](../.github/workflows/c
 
 The `windows` job signs in two rounds, because the installers must contain signed executables:
 
-1. `executables`: the `x64` and `arm64` folders with `coolercast.exe` and `coolercast-app.exe`.
+1. `executables`: `coolercast.exe` and `coolercast-app.exe`.
 2. `installers`: the MSI files built from the signed executables.
 
 Product name and version must match the metadata embedded by `assets/windows/resources.rs` and
@@ -40,22 +40,12 @@ Product name and version must match the metadata embedded by `assets/windows/res
     <parameter name="version" default-value="0.0.0" />
   </parameters>
   <zip-file>
-    <directory path="x64">
-      <pe-file path="coolercast.exe" product-name="CoolerCast" product-version="${version}">
-        <authenticode-sign />
-      </pe-file>
-      <pe-file path="coolercast-app.exe" product-name="CoolerCast" product-version="${version}">
-        <authenticode-sign />
-      </pe-file>
-    </directory>
-    <directory path="arm64">
-      <pe-file path="coolercast.exe" product-name="CoolerCast" product-version="${version}">
-        <authenticode-sign />
-      </pe-file>
-      <pe-file path="coolercast-app.exe" product-name="CoolerCast" product-version="${version}">
-        <authenticode-sign />
-      </pe-file>
-    </directory>
+    <pe-file path="coolercast.exe" product-name="CoolerCast" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="coolercast-app.exe" product-name="CoolerCast" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
   </zip-file>
 </artifact-configuration>
 ```
@@ -71,9 +61,6 @@ Product name and version must match the metadata embedded by `assets/windows/res
     <msi-file path="coolercast-${version}-windows-x64.msi">
       <authenticode-sign />
     </msi-file>
-    <msi-file path="coolercast-${version}-windows-arm64.msi">
-      <authenticode-sign />
-    </msi-file>
   </zip-file>
 </artifact-configuration>
 ```
@@ -83,5 +70,5 @@ Product name and version must match the metadata embedded by `assets/windows/res
 1. Bump `version` in the workspace `Cargo.toml` and commit.
 2. Tag and push: `git tag -a vX.Y.Z -m "CoolerCast X.Y.Z"` and `git push origin vX.Y.Z`.
 3. The `windows` job waits for both signing requests to be approved in SignPath. The `release`
-   job then publishes the MSI installers, the portable zips, the Linux tarballs and
+   job then publishes the MSI installer, the portable zip, the Linux tarball and
    `SHA256SUMS.txt`. The build fails if the tag does not match the crate version.

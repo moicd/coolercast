@@ -1,8 +1,8 @@
 //! Core of CoolerCast: device protocols, the HID transport, CPU sensors, configuration and the
-//! IPC channel shared by the service, the CLI and the app. Runs on Windows and Linux.
+//! IPC channel shared by the service, the CLI and the app. Runs on Windows and Linux (x86-64).
 
-#[cfg(not(any(windows, target_os = "linux")))]
-compile_error!("CoolerCast supports Windows and Linux");
+#[cfg(not(all(any(windows, target_os = "linux"), target_arch = "x86_64")))]
+compile_error!("CoolerCast supports Windows and Linux on x86-64");
 
 pub mod config;
 pub mod device;

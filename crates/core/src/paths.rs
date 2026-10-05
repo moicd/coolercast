@@ -38,7 +38,7 @@ pub fn socket_file() -> PathBuf {
 
 /// Locates a PawnIO module shipped with the app: `modules\` next to the executable, the
 /// executable's own folder, or the repository copy in debug builds.
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(windows)]
 pub fn module_file(name: &str) -> Option<PathBuf> {
     let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let mut candidates = vec![exe_dir.join("modules"), exe_dir];

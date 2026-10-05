@@ -6,7 +6,7 @@ Guidance for coding agents working on this repository.
 
 CoolerCast is a lightweight, native replacement for the official DeepCool app. It drives the
 display of DeepCool CPU coolers (AK series for now) with CPU temperature and usage. Windows and
-Linux, x64 and ARM64.
+Linux, x86-64 only (the coolers are for desktop sockets).
 
 - `crates/core` (`coolercast-core`): HID transport, device protocols, sensors, config, IPC, engine.
   Platform code lives in `windows.rs` / `linux.rs` submodules (`hid`, `ipc`, `sensors::cpu_temp`)
@@ -30,13 +30,12 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo build --release                # optimized binaries in target/release
 
-# Cross-checks for the other targets (no linker needed)
+# Cross-check Linux from Windows (no linker needed)
 cargo clippy --target x86_64-unknown-linux-musl --all-targets -- -D warnings
-cargo clippy --target aarch64-pc-windows-msvc --all-targets -- -D warnings
 ```
 
-Linux tests only run on Linux (CI runs them on x86_64 and ARM64, and installs the tarball with
-`install.sh` on a systemd runner). CI also installs and removes the MSI on Windows.
+Linux tests only run on Linux (CI runs them and installs the tarball with `install.sh` on a
+systemd runner). CI also installs and removes the MSI on Windows.
 
 Hardware checks (need a connected cooler and the official DeepCool app closed):
 

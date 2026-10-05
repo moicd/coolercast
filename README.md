@@ -14,7 +14,7 @@ service written in Rust, plus an optional tray icon and settings window on Windo
 | RAM | ~1 GB working set | 0.8 MB private (service), 2.1 MB (app with its window open) |
 | CPU while idle | several Chromium processes awake | 0 % (wakes once per second) |
 | Install size | ~1.2 GB | 0.9 MB |
-| Platforms | Windows x64 | Windows and Linux, x64 and ARM64 |
+| Platforms | Windows | Windows and Linux |
 
 <sub>Measured on a Windows 11 test system. RAM for CoolerCast is the private working set shown by
 Task Manager.</sub>
@@ -29,11 +29,9 @@ Get the latest version from the [releases page](https://github.com/moicd/coolerc
 
 | System | File |
 |---|---|
-| Windows 10/11, Intel or AMD (most PCs) | `coolercast-<version>-windows-x64.msi` |
-| Windows 11 on ARM | `coolercast-<version>-windows-arm64.msi` |
-| Windows, without installing | `coolercast-<version>-windows-x64.zip` / `-arm64.zip` |
-| Linux, Intel or AMD | `coolercast-<version>-linux-x86_64.tar.gz` |
-| Linux on ARM64 | `coolercast-<version>-linux-aarch64.tar.gz` |
+| Windows 10/11 (installer) | `coolercast-<version>-windows-x64.msi` |
+| Windows, without installing | `coolercast-<version>-windows-x64.zip` |
+| Linux | `coolercast-<version>-linux-x86_64.tar.gz` |
 
 `SHA256SUMS.txt` lists the checksums of every file.
 
@@ -64,8 +62,7 @@ Other DeepCool products use different protocols. Contributions are welcome; see
 |---|---|---|
 | Windows x64, Intel | PawnIO, package thermal MSR | Tested |
 | Windows x64, AMD Ryzen | PawnIO, Tctl over SMN | Experimental |
-| Windows ARM64 | not available yet (usage only) | Builds, untested |
-| Linux x86_64 / ARM64 | kernel hwmon (`k10temp`, `coretemp`, `cpu_thermal`) | Builds and installs in CI, untested on a cooler |
+| Linux | kernel hwmon (`k10temp`, `coretemp`) | Installs in CI, untested on a cooler |
 
 ## Install on Windows
 
@@ -98,8 +95,8 @@ opened **as administrator** in that folder run `coolercast install`. Remove it w
 Requires systemd.
 
 ```bash
-tar xzf coolercast-*-linux-*.tar.gz
-cd coolercast-*-linux-*/
+tar xzf coolercast-*-linux-x86_64.tar.gz
+cd coolercast-*-linux-x86_64/
 sudo ./install.sh
 ```
 
@@ -181,8 +178,8 @@ app runs as a normal user and talks to the service over the control channel.
 
 ## Building
 
-Requires the Rust toolchain. On Windows, also the Visual Studio Build Tools (MSVC); add the ARM64
-build tools to cross-compile for Windows on ARM.
+Requires the Rust toolchain and, on Windows, the Visual Studio Build Tools (MSVC). CoolerCast
+targets x86-64 only: DeepCool's digital coolers are made for desktop CPU sockets.
 
 ```bash
 cargo build --release
@@ -190,8 +187,8 @@ cargo test
 ```
 
 The binaries end up in `target/release`. On Windows, copy the `third_party/pawnio-modules/*.bin`
-files to a `modules` folder next to them. Release builds for every platform, the MSI installers
-(WiX, `packaging/windows`) and the Linux tarballs (`packaging/linux`) are produced by
+files to a `modules` folder next to them. The release files, including the MSI installer (WiX,
+`packaging/windows`) and the Linux tarball (`packaging/linux`), are produced by
 [the CI workflow](.github/workflows/ci.yml).
 
 ## Credits

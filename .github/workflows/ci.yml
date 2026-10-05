@@ -29,7 +29,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: aarch64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
 
@@ -54,17 +53,13 @@ jobs:
         run: cargo test --locked
 
       - name: Build
-        run: |
-          cargo build --release --locked
-          cargo build --release --locked --target aarch64-pc-windows-msvc
+        run: cargo build --release --locked
 
       - name: Collect executables
         shell: pwsh
         run: |
-          foreach ($arch in @{ x64 = 'target/release'; arm64 = 'target/aarch64-pc-windows-msvc/release' }.GetEnumerator()) {
-            New-Item -ItemType Directory -Force "bin/$($arch.Key)" | Out-Null
-            Copy-Item "$($arch.Value)/coolercast.exe", "$($arch.Value)/coolercast-app.exe" "bin/$($arch.Key)"
-          }
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Copy-Item target/release/coolercast.exe, target/release/coolercast-app.exe bin
 
       - uses: actions/upload-artifact@v7
         id: unsigned
@@ -98,18 +93,16 @@ jobs:
         run: |
           $version = '${{ steps.version.outputs.version }}'
           New-Item -ItemType Directory -Force dist | Out-Null
-          foreach ($arch in 'x64', 'arm64') {
-            wix build packaging/windows/coolercast.wxs -arch $arch -ext WixToolset.UI.wixext `
-              -d Version=$version -d BinDir=bin/$arch -o "dist/coolercast-$version-windows-$arch.msi"
-            if ($LASTEXITCODE) { throw "wix build failed for $arch" }
-            Remove-Item "dist/coolercast-$version-windows-$arch.wixpdb"
+          wix build packaging/windows/coolercast.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d Version=$version -d BinDir=bin -o "dist/coolercast-$version-windows-x64.msi"
+          if ($LASTEXITCODE) { throw "wix build failed" }
+          Remove-Item "dist/coolercast-$version-windows-x64.wixpdb"
 
-            $portable = "portable/$arch/CoolerCast"
-            New-Item -ItemType Directory -Force "$portable/modules" | Out-Null
-            Copy-Item "bin/$arch/*.exe", README.md, LICENSE $portable
-            Copy-Item third_party/pawnio-modules/*.bin, third_party/pawnio-modules/COPYING "$portable/modules"
-            Compress-Archive -Path "$portable/*" -DestinationPath "dist/coolercast-$version-windows-$arch.zip"
-          }
+          $portable = "portable/CoolerCast"
+          New-Item -ItemType Directory -Force "$portable/modules" | Out-Null
+          Copy-Item bin/*.exe, README.md, LICENSE $portable
+          Copy-Item third_party/pawnio-modules/*.bin, third_party/pawnio-modules/COPYING "$portable/modules"
+          Compress-Archive -Path "$portable/*" -DestinationPath "dist/coolercast-$version-windows-x64.zip"
 
       - uses: actions/upload-artifact@v7
         id: installers
@@ -155,17 +148,9 @@ jobs:
           path: dist/
 
   linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     env:
-      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      TARGET: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v5
 
@@ -190,7 +175,7 @@ jobs:
       - name: Package
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "coolercast") | .version')
-          name="coolercast-$version-linux-${{ matrix.arch }}"
+          name="coolercast-$version-linux-x86_64"
           mkdir -p "pkg/$name" dist
           cp "target/$TARGET/release/coolercast" packaging/linux/* README.md LICENSE "pkg/$name/"
           chmod 755 "pkg/$name/coolercast" "pkg/$name/install.sh"
@@ -212,7 +197,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: release-linux-${{ matrix.arch }}
+          name: release-linux
           path: dist/
 
   release:
