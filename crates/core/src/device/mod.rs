@@ -4,7 +4,7 @@ pub mod ak;
 
 use std::io;
 
-use crate::config::Unit;
+use crate::config::{Symbol, Unit};
 use crate::hid::{self, DeviceInfo, HidDevice};
 
 /// USB vendor ID used by DeepCool.
@@ -74,8 +74,19 @@ pub fn detect() -> io::Result<Vec<Detected>> {
 /// What a display should show on its next update.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reading {
-    Temperature { celsius: f32, unit: Unit },
-    Usage { percent: f32 },
+    Temperature {
+        celsius: f32,
+        unit: Unit,
+    },
+    Usage {
+        percent: f32,
+    },
+    /// A value chosen by the user: shown as is, with its own bar level.
+    Custom {
+        value: u16,
+        symbol: Symbol,
+        bar: u8,
+    },
 }
 
 /// An opened, supported cooler.
@@ -118,6 +129,14 @@ impl Cooler {
     pub fn show(&mut self, reading: Reading, alarm: bool) -> io::Result<()> {
         match self.model.family {
             Family::AkSeries => self.hid.write(&ak::packet(self.report_id, reading, alarm)),
+        }
+    }
+
+    /// Sends the payload bytes as they are, without any validation. Only for exploring
+    /// undocumented values (`coolercast probe`).
+    pub fn send_raw(&mut self, payload: [u8; ak::PAYLOAD_LEN]) -> io::Result<()> {
+        match self.model.family {
+            Family::AkSeries => self.hid.write(&ak::raw_packet(self.report_id, payload)),
         }
     }
 }

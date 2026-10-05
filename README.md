@@ -24,11 +24,12 @@ Task Manager.</sub>
 
 ## Features
 
-- CPU temperature (°C or °F), CPU usage, or both alternating.
+- CPU temperature (°C or °F), CPU usage, both alternating, or a fixed number of your choice.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a Windows service: starts with the PC, no window, no tray icon required.
 - Optional tray icon that shows the temperature, and a settings window with a live preview of
-  the cooler display and the last two minutes of temperature and usage.
+  the cooler display and the last two minutes of temperature and usage (translucent Acrylic
+  glass on Windows 11).
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
 - No runtime, no installer, no telemetry, no network access.
 
@@ -80,6 +81,7 @@ To remove it, run `coolercast uninstall` as administrator and delete the folder.
 ```text
 coolercast list              Show detected coolers and sensor readings
 coolercast test              Play a test pattern on the connected coolers
+coolercast probe <what>      Step through undocumented display values (see below)
 coolercast run               Drive the coolers in the foreground (Ctrl+C to stop)
 coolercast status            Show what the running service is doing
 coolercast set key=value     Change a setting, e.g. `set mode=auto unit=fahrenheit`
@@ -96,12 +98,35 @@ picks up changes immediately.
 
 | Key | Values | Default |
 |---|---|---|
-| `mode` | `temperature`, `usage`, `auto` (alternates) | `temperature` |
+| `mode` | `temperature`, `usage`, `auto` (alternates), `custom` | `temperature` |
 | `unit` | `celsius`, `fahrenheit` | `celsius` |
 | `alarm` | `true`, `false` | `true` |
 | `alarm_threshold` | 40–110 (°C) | `90` |
 | `interval_ms` | 250–10000 | `1000` |
 | `auto_interval_s` | 1–3600 | `5` |
+| `custom_value` | 0–999, shown in `custom` mode | `0` |
+| `custom_symbol` | `celsius`, `fahrenheit`, `percent` | `celsius` |
+| `custom_bar` | 1–10 | `1` |
+
+In `custom` mode the temperature alarm still blinks the display when the CPU gets hot.
+
+### Exploring the display
+
+The AK series display has fixed segments: three digits, the °C/°F/% symbols and a 10-step bar.
+Only digits 0–9 and the values in [the protocol notes](docs/protocol-ak-series.md) are known.
+`coolercast probe` sends other values one at a time so you can see whether the firmware hides
+letters or other symbols. Stop the service first (`coolercast stop`), then run, for example:
+
+```bash
+coolercast probe digit          # digit values 10-31 in every position
+coolercast probe mode 0 255     # every mode byte, with "123" on the digits
+coolercast probe bar            # bar values 0-20
+coolercast probe raw 19 5 1 2 3 0
+```
+
+Press Enter for the next value and type what you see to note it; the notes are printed as a
+table at the end. If the display stops responding, unplug the cooler's USB cable. Findings are
+welcome as issues.
 
 The service log is at `C:\ProgramData\CoolerCast\coolercast.log`.
 

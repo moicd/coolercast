@@ -151,6 +151,7 @@ impl Engine {
                 status.shown = Some(match reading {
                     Reading::Temperature { .. } => Shown::Temperature,
                     Reading::Usage { .. } => Shown::Usage,
+                    Reading::Custom { .. } => Shown::Custom,
                 });
                 status.alarm_active = alarm;
                 if status.history.len() == HISTORY_LEN {
@@ -236,6 +237,11 @@ pub fn choose_reading(
         unit: config.unit,
     };
     match (config.mode, cpu_temp) {
+        (Mode::Custom, _) => Reading::Custom {
+            value: config.custom_value,
+            symbol: config.custom_symbol,
+            bar: config.custom_bar,
+        },
         (_, None) | (Mode::Usage, _) => usage,
         (Mode::Temperature, Some(t)) => temperature(t),
         (Mode::Auto, Some(t)) => {
@@ -252,7 +258,7 @@ pub fn choose_reading(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Unit;
+    use crate::config::{Symbol, Unit};
 
     fn config(mode: Mode) -> Config {
         Config {
@@ -296,6 +302,26 @@ mod tests {
             choose_reading(&c, None, 20.0, Duration::ZERO),
             Reading::Usage { .. }
         ));
+    }
+
+    #[test]
+    fn custom_ignores_the_sensors() {
+        let c = Config {
+            custom_value: 42,
+            custom_symbol: Symbol::Percent,
+            custom_bar: 3,
+            ..config(Mode::Custom)
+        };
+        let expected = Reading::Custom {
+            value: 42,
+            symbol: Symbol::Percent,
+            bar: 3,
+        };
+        assert_eq!(
+            choose_reading(&c, Some(50.0), 20.0, Duration::ZERO),
+            expected
+        );
+        assert_eq!(choose_reading(&c, None, 20.0, Duration::ZERO), expected);
     }
 
     #[test]

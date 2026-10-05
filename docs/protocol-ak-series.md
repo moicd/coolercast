@@ -63,6 +63,16 @@ code path.
 For example, an `A400-DIGITAL` (PID `0x0001`) reports report ID `0` and an `OutputReportByteLength`
 of 65.
 
+## Unknown values
+
+Nothing is known about values outside the ranges above: digit values above 9, other mode bytes,
+bar level 0 or above 10. CoolerCast never sends them, except through `coolercast probe`, which
+exists to find out what the firmware does with them (for example blank digits, letters or other
+symbols). Results will be added here.
+
+CoolerCast's `custom` mode only uses the documented values: a number from 0 to 999, one of the
+three symbols (modes `19`, `35` and `76`) and a bar level from 1 to 10.
+
 ## Display modes of the official app
 
 The official app stores a `mode` value per device: `1` temperature, `2` usage and `3` "dynamic"

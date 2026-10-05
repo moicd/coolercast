@@ -15,6 +15,8 @@ pub enum Mode {
     Usage,
     /// Alternates between temperature and usage.
     Auto,
+    /// A fixed value chosen by the user (`custom_value`, `custom_symbol`, `custom_bar`).
+    Custom,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +44,16 @@ impl Unit {
     }
 }
 
+/// Unit symbol lit next to the digits in `custom` mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Symbol {
+    #[default]
+    Celsius,
+    Fahrenheit,
+    Percent,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -55,6 +67,12 @@ pub struct Config {
     pub interval_ms: u32,
     /// Seconds each value stays on screen in `auto` mode.
     pub auto_interval_s: u32,
+    /// Number shown in `custom` mode.
+    pub custom_value: u16,
+    /// Symbol lit in `custom` mode.
+    pub custom_symbol: Symbol,
+    /// Bar level in `custom` mode.
+    pub custom_bar: u8,
 }
 
 impl Default for Config {
@@ -66,6 +84,9 @@ impl Default for Config {
             alarm_threshold: 90,
             interval_ms: 1000,
             auto_interval_s: 5,
+            custom_value: 0,
+            custom_symbol: Symbol::Celsius,
+            custom_bar: 1,
         }
     }
 }
@@ -76,6 +97,10 @@ pub const INTERVAL_MS: (u32, u32) = (250, 10_000);
 pub const AUTO_INTERVAL_S: (u32, u32) = (1, 3600);
 /// Allowed range of [`Config::alarm_threshold`].
 pub const ALARM_THRESHOLD: (u8, u8) = (40, 110);
+/// Allowed range of [`Config::custom_value`]: what three digits can show.
+pub const CUSTOM_VALUE: (u16, u16) = (0, 999);
+/// Allowed range of [`Config::custom_bar`].
+pub const CUSTOM_BAR: (u8, u8) = (1, 10);
 
 impl Config {
     /// Loads the config file, falling back to defaults if it does not exist.
@@ -109,7 +134,8 @@ impl Config {
         format!(
             "# CoolerCast settings. Changes are picked up automatically.\n\
              \n\
-             # What the display shows: \"temperature\", \"usage\" or \"auto\" (alternates both).\n\
+             # What the display shows: \"temperature\", \"usage\", \"auto\" (alternates both)\n\
+             # or \"custom\" (the custom_* values below).\n\
              mode = \"{mode}\"\n\
              # Temperature unit: \"celsius\" or \"fahrenheit\".\n\
              unit = \"{unit}\"\n\
@@ -119,19 +145,32 @@ impl Config {
              # Refresh interval in milliseconds ({i_min}-{i_max}).\n\
              interval_ms = {interval}\n\
              # Seconds each value stays on screen in auto mode ({s_min}-{s_max}).\n\
-             auto_interval_s = {auto}\n",
+             auto_interval_s = {auto}\n\
+             \n\
+             # Custom mode: a number ({v_min}-{v_max}), the symbol next to it (\"celsius\",\n\
+             # \"fahrenheit\" or \"percent\") and the bar level ({b_min}-{b_max}).\n\
+             custom_value = {custom_value}\n\
+             custom_symbol = \"{custom_symbol}\"\n\
+             custom_bar = {custom_bar}\n",
             mode = self.mode,
             unit = self.unit,
             alarm = self.alarm,
             threshold = self.alarm_threshold,
             interval = self.interval_ms,
             auto = self.auto_interval_s,
+            custom_value = self.custom_value,
+            custom_symbol = self.custom_symbol,
+            custom_bar = self.custom_bar,
             a_min = ALARM_THRESHOLD.0,
             a_max = ALARM_THRESHOLD.1,
             i_min = INTERVAL_MS.0,
             i_max = INTERVAL_MS.1,
             s_min = AUTO_INTERVAL_S.0,
             s_max = AUTO_INTERVAL_S.1,
+            v_min = CUSTOM_VALUE.0,
+            v_max = CUSTOM_VALUE.1,
+            b_min = CUSTOM_BAR.0,
+            b_max = CUSTOM_BAR.1,
         )
     }
 
@@ -163,13 +202,16 @@ impl Config {
             "alarm_threshold" => self.alarm_threshold = num(value, ALARM_THRESHOLD)?,
             "interval_ms" => self.interval_ms = num(value, INTERVAL_MS)?,
             "auto_interval_s" => self.auto_interval_s = num(value, AUTO_INTERVAL_S)?,
+            "custom_value" => self.custom_value = num(value, CUSTOM_VALUE)?,
+            "custom_symbol" => self.custom_symbol = value.parse()?,
+            "custom_bar" => self.custom_bar = num(value, CUSTOM_BAR)?,
             _ => return Err(format!("unknown setting '{key}'")),
         }
         Ok(())
     }
 
     /// `(key, value)` pairs in the same text form accepted by [`Config::set`].
-    pub fn entries(&self) -> [(&'static str, String); 6] {
+    pub fn entries(&self) -> [(&'static str, String); 9] {
         [
             ("mode", self.mode.to_string()),
             ("unit", self.unit.to_string()),
@@ -177,6 +219,9 @@ impl Config {
             ("alarm_threshold", self.alarm_threshold.to_string()),
             ("interval_ms", self.interval_ms.to_string()),
             ("auto_interval_s", self.auto_interval_s.to_string()),
+            ("custom_value", self.custom_value.to_string()),
+            ("custom_symbol", self.custom_symbol.to_string()),
+            ("custom_bar", self.custom_bar.to_string()),
         ]
     }
 
@@ -188,6 +233,8 @@ impl Config {
         self.auto_interval_s = self
             .auto_interval_s
             .clamp(AUTO_INTERVAL_S.0, AUTO_INTERVAL_S.1);
+        self.custom_value = self.custom_value.clamp(CUSTOM_VALUE.0, CUSTOM_VALUE.1);
+        self.custom_bar = self.custom_bar.clamp(CUSTOM_BAR.0, CUSTOM_BAR.1);
         self
     }
 }
@@ -198,6 +245,7 @@ impl fmt::Display for Mode {
             Mode::Temperature => "temperature",
             Mode::Usage => "usage",
             Mode::Auto => "auto",
+            Mode::Custom => "custom",
         })
     }
 }
@@ -210,8 +258,9 @@ impl FromStr for Mode {
             "temperature" | "temp" => Ok(Mode::Temperature),
             "usage" => Ok(Mode::Usage),
             "auto" => Ok(Mode::Auto),
+            "custom" => Ok(Mode::Custom),
             _ => Err(format!(
-                "unknown mode '{s}' (expected temperature, usage or auto)"
+                "unknown mode '{s}' (expected temperature, usage, auto or custom)"
             )),
         }
     }
@@ -240,6 +289,31 @@ impl FromStr for Unit {
     }
 }
 
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Symbol::Celsius => "celsius",
+            Symbol::Fahrenheit => "fahrenheit",
+            Symbol::Percent => "percent",
+        })
+    }
+}
+
+impl FromStr for Symbol {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "celsius" | "c" => Ok(Symbol::Celsius),
+            "fahrenheit" | "f" => Ok(Symbol::Fahrenheit),
+            "percent" | "%" => Ok(Symbol::Percent),
+            _ => Err(format!(
+                "unknown symbol '{s}' (expected celsius, fahrenheit or percent)"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +327,9 @@ mod tests {
             alarm_threshold: 85,
             interval_ms: 500,
             auto_interval_s: 3,
+            custom_value: 123,
+            custom_symbol: Symbol::Percent,
+            custom_bar: 7,
         };
         assert_eq!(Config::parse(&config.to_toml()).unwrap(), config);
         assert_eq!(
@@ -278,6 +355,25 @@ mod tests {
         let config = Config::parse("interval_ms = 1\nalarm_threshold = 255").unwrap();
         assert_eq!(config.interval_ms, 250);
         assert_eq!(config.alarm_threshold, 110);
+        let config = Config::parse("custom_value = 5000\ncustom_bar = 0").unwrap();
+        assert_eq!((config.custom_value, config.custom_bar), (999, 1));
+    }
+
+    #[test]
+    fn custom_settings_are_validated() {
+        let mut config = Config::default();
+        config.set("mode", "custom").unwrap();
+        config.set("custom_value", "42").unwrap();
+        config.set("custom_symbol", "percent").unwrap();
+        config.set("custom_bar", "10").unwrap();
+        assert_eq!(config.mode, Mode::Custom);
+        assert_eq!(
+            (config.custom_value, config.custom_symbol, config.custom_bar),
+            (42, Symbol::Percent, 10)
+        );
+        assert!(config.set("custom_value", "1000").is_err());
+        assert!(config.set("custom_bar", "11").is_err());
+        assert!(config.set("custom_symbol", "kelvin").is_err());
     }
 
     #[test]

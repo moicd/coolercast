@@ -4,6 +4,7 @@
 mod service;
 
 use std::error::Error;
+use std::io::{BufRead, Write};
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use std::{env, io};
 
 use coolercast_core::config::{Config, Unit};
-use coolercast_core::device::{self, Cooler, Reading};
+use coolercast_core::device::{self, Cooler, Reading, ak};
 use coolercast_core::engine::Engine;
 use coolercast_core::sensors::cpu_temp::CpuTemp;
 use coolercast_core::sensors::cpu_usage::CpuUsage;
@@ -28,6 +29,8 @@ Usage: coolercast <command>
 Commands:
   list              Show detected coolers and sensor readings
   test              Play a test pattern on the connected coolers
+  probe <what>      Step through undocumented display values (service stopped):
+                    probe mode|bar|digit [from] [to], or probe raw <6 bytes>
   run               Drive the coolers in the foreground (Ctrl+C to stop)
   status            Show what the running service is doing
   set <key=value>   Change a setting of the running service, e.g. `set mode=auto`
@@ -36,8 +39,9 @@ Commands:
   start | stop      Start or stop the installed service (administrator)
   version           Print the version
 
-Settings: mode (temperature|usage|auto), unit (celsius|fahrenheit), alarm (on|off),
-          alarm_threshold (°C), interval_ms, auto_interval_s
+Settings: mode (temperature|usage|auto|custom), unit (celsius|fahrenheit), alarm (on|off),
+          alarm_threshold (°C), interval_ms, auto_interval_s,
+          custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10)
 ";
 
 const OFFICIAL_APP: &str = "DeepCool.exe";
@@ -48,6 +52,7 @@ fn main() -> ExitCode {
     let result = match command {
         "list" => list(),
         "test" => test_pattern(),
+        "probe" => probe(&args[1..]),
         "run" => run_foreground(),
         "status" => status(),
         "set" => set(&args[1..]),
@@ -168,6 +173,145 @@ fn test_pattern() -> Result {
     Ok(())
 }
 
+/// Which payload byte `probe` steps through; the others keep values that make the change
+/// visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeField {
+    Mode,
+    Bar,
+    Digit,
+}
+
+impl ProbeField {
+    /// Default range: everything for the mode byte, just past the documented values otherwise.
+    fn range(self) -> (u8, u8) {
+        match self {
+            ProbeField::Mode => (0, 255),
+            ProbeField::Bar => (0, 20),
+            ProbeField::Digit => (10, 31),
+        }
+    }
+
+    fn payload(self, value: u8) -> [u8; ak::PAYLOAD_LEN] {
+        match self {
+            // "123" and a half bar show which symbols and segments a mode lights.
+            ProbeField::Mode => [value, 5, 1, 2, 3, 0],
+            ProbeField::Bar => [19, value, 1, 2, 3, 0],
+            // The same value in every position, in case leading digits are blanked.
+            ProbeField::Digit => [19, 5, value, value, value, 0],
+        }
+    }
+}
+
+fn parse_probe(args: &[String]) -> Result<(ProbeField, u8, u8)> {
+    let field = match args.first().map(String::as_str) {
+        Some("mode") => ProbeField::Mode,
+        Some("bar") => ProbeField::Bar,
+        Some("digit") => ProbeField::Digit,
+        _ => return Err("expected mode, bar, digit or raw".into()),
+    };
+    let (default_from, default_to) = field.range();
+    let byte = |i: usize, default: u8| -> Result<u8> {
+        args.get(i).map_or(Ok(default), |a| {
+            a.parse()
+                .map_err(|_| format!("'{a}' is not a byte (0-255)").into())
+        })
+    };
+    let (from, to) = (byte(1, default_from)?, byte(2, default_to)?);
+    if from > to {
+        return Err(format!("empty range {from}-{to}").into());
+    }
+    Ok((field, from, to))
+}
+
+fn probe(args: &[String]) -> Result {
+    if ipc::query_status().is_ok() {
+        return Err("the service is running and would overwrite the display.\n\
+                    Stop it first with `coolercast stop` (as administrator)."
+            .into());
+    }
+    warn_if_official_app_running();
+    let mut coolers: Vec<Cooler> = device::detect()?
+        .iter()
+        .filter(|d| d.model.is_some())
+        .map(Cooler::open)
+        .collect::<io::Result<_>>()?;
+    if coolers.is_empty() {
+        return Err("no supported cooler found".into());
+    }
+    let mut send = |payload: [u8; ak::PAYLOAD_LEN]| -> Result {
+        for cooler in &mut coolers {
+            cooler.send_raw(payload)?;
+        }
+        Ok(())
+    };
+
+    if args.first().map(String::as_str) == Some("raw") {
+        let bytes: Vec<u8> = args[1..]
+            .iter()
+            .map(|a| a.parse::<u8>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| "raw expects 6 bytes (0-255): mode bar digit digit digit alarm")?;
+        let payload: [u8; ak::PAYLOAD_LEN] = bytes
+            .try_into()
+            .map_err(|_| "raw expects 6 bytes: mode bar digit digit digit alarm")?;
+        send(payload)?;
+        println!("sent {payload:?}; the display keeps it until the next report");
+        return Ok(());
+    }
+
+    let (field, from, to) = parse_probe(args)?;
+    println!(
+        "Sends undocumented values to the display, one at a time. If it stops responding,\n\
+         unplug the cooler's USB cable (or restart the PC).\n\
+         \n\
+         Enter: next   -: previous   #N: jump to N   q: quit\n\
+         Anything else is saved as a note for the current value; notes are printed at the end.\n"
+    );
+    let mut notes: Vec<(u8, [u8; ak::PAYLOAD_LEN], String)> = Vec::new();
+    let mut value = from;
+    let stdin = io::stdin();
+    loop {
+        let payload = field.payload(value);
+        send(payload)?;
+        print!("{field:?} = {value:<3}  payload {payload:?} > ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        match line.trim() {
+            "q" => break,
+            "-" => value = value.saturating_sub(1).max(from),
+            jump if jump.starts_with('#') => match jump[1..].parse::<u8>() {
+                Ok(n) if (from..=to).contains(&n) => value = n,
+                _ => println!("  out of range {from}-{to}"),
+            },
+            input => {
+                if !input.is_empty() {
+                    notes.push((value, payload, input.to_owned()));
+                }
+                if value == to {
+                    break;
+                }
+                value += 1;
+            }
+        }
+    }
+
+    for cooler in &mut coolers {
+        cooler.init()?;
+    }
+    if !notes.is_empty() {
+        println!("\n| {field:?} | Payload | Shows |\n|---|---|---|");
+        for (value, payload, note) in &notes {
+            println!("| {value} | `{payload:?}` | {note} |");
+        }
+    }
+    println!("\nDone. Start the service again with `coolercast start` (as administrator).");
+    Ok(())
+}
+
 static CONSOLE_STOP: OnceLock<Arc<Event>> = OnceLock::new();
 
 unsafe extern "system" fn on_console_ctrl(_ctrl_type: u32) -> BOOL {
@@ -235,4 +379,40 @@ fn set(args: &[String]) -> Result {
         println!("{key} = {value}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn probe_ranges_default_per_field() {
+        assert_eq!(
+            parse_probe(&args(&["digit"])).unwrap(),
+            (ProbeField::Digit, 10, 31)
+        );
+        assert_eq!(
+            parse_probe(&args(&["mode", "100", "120"])).unwrap(),
+            (ProbeField::Mode, 100, 120)
+        );
+    }
+
+    #[test]
+    fn probe_rejects_bad_arguments() {
+        assert!(parse_probe(&args(&[])).is_err());
+        assert!(parse_probe(&args(&["leds"])).is_err());
+        assert!(parse_probe(&args(&["bar", "300"])).is_err());
+        assert!(parse_probe(&args(&["bar", "9", "3"])).is_err());
+    }
+
+    #[test]
+    fn probe_payload_puts_the_value_in_place() {
+        assert_eq!(ProbeField::Mode.payload(42), [42, 5, 1, 2, 3, 0]);
+        assert_eq!(ProbeField::Bar.payload(0), [19, 0, 1, 2, 3, 0]);
+        assert_eq!(ProbeField::Digit.payload(12), [19, 5, 12, 12, 12, 0]);
+    }
 }
