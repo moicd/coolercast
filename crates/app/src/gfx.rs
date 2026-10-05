@@ -98,8 +98,13 @@ struct Font {
     raw: *mut GpFont,
 }
 
+/// `PixelFormat32bppPARGB` from the GDI+ headers (a macro, missing from windows-sys).
+const PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000E_200B;
+
 pub struct Canvas {
     g: *mut GpGraphics,
+    /// The bitmap `g` draws on when created with [`Canvas::on_pixels`].
+    bitmap: *mut GpBitmap,
     scale: f32,
     families: [*mut GpFontFamily; 2],
     format: *mut GpStringFormat,
@@ -113,10 +118,55 @@ impl Canvas {
         if unsafe { GdipCreateFromHDC(hdc, &mut g) } != Ok {
             return None;
         }
+        Some(Self::setup(
+            g,
+            ptr::null_mut(),
+            scale,
+            TextRenderingHintClearTypeGridFit,
+        ))
+    }
+
+    /// Draws on 32-bit premultiplied ARGB pixels (top-down rows, `width * 4` bytes each) and
+    /// keeps per-pixel alpha, so what is behind the window can show through.
+    pub fn on_pixels(bits: *mut u8, width: i32, height: i32, scale: f32) -> Option<Self> {
+        let mut bitmap = ptr::null_mut();
+        let status = unsafe {
+            GdipCreateBitmapFromScan0(
+                width,
+                height,
+                width * 4,
+                PIXEL_FORMAT_32BPP_PARGB,
+                bits,
+                &mut bitmap,
+            )
+        };
+        if status != Ok {
+            return None;
+        }
+        let mut g = ptr::null_mut();
+        if unsafe { GdipGetImageGraphicsContext(bitmap.cast(), &mut g) } != Ok {
+            unsafe { GdipDisposeImage(bitmap.cast()) };
+            return None;
+        }
+        // ClearType needs an opaque background; grayscale anti-aliasing keeps the alpha right.
+        Some(Self::setup(
+            g,
+            bitmap,
+            scale,
+            TextRenderingHintAntiAliasGridFit,
+        ))
+    }
+
+    fn setup(
+        g: *mut GpGraphics,
+        bitmap: *mut GpBitmap,
+        scale: f32,
+        text_hint: TextRenderingHint,
+    ) -> Self {
         unsafe {
             GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
             GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
-            GdipSetTextRenderingHint(g, TextRenderingHintClearTypeGridFit);
+            GdipSetTextRenderingHint(g, text_hint);
         }
         let family = |names: &[&str]| {
             names.iter().find_map(|name| {
@@ -143,13 +193,14 @@ impl Canvas {
             GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
             GdipSetStringFormatTrimming(format, StringTrimmingEllipsisCharacter);
         }
-        Some(Self {
+        Self {
             g,
+            bitmap,
             scale,
             families: [regular, semibold],
             format,
             fonts: RefCell::new(Vec::new()),
-        })
+        }
     }
 
     fn s(&self, v: f32) -> f32 {
@@ -209,6 +260,57 @@ impl Canvas {
         let path = self.rounded_path(r, radius);
         self.with_brush(color, |b| unsafe {
             GdipFillPath(self.g, b, path);
+        });
+        unsafe { GdipDeletePath(path) };
+    }
+
+    /// Calls `f` with a vertical gradient brush spanning `r` (device pixels).
+    fn with_gradient(&self, r: Rect, top: Color, bottom: Color, f: impl FnOnce(*mut GpBrush)) {
+        // One pixel of overscan keeps the wrapped gradient from bleeding into the edges.
+        let rect = RectF {
+            X: r.x,
+            Y: r.y - 1.0,
+            Width: r.w.max(1.0),
+            Height: r.h + 2.0,
+        };
+        let mut brush: *mut GpLineGradient = ptr::null_mut();
+        unsafe {
+            GdipCreateLineBrushFromRect(
+                &rect,
+                top.0,
+                bottom.0,
+                LinearGradientModeVertical,
+                WrapModeTileFlipXY,
+                &mut brush,
+            )
+        };
+        f(brush.cast());
+        unsafe { GdipDeleteBrush(brush.cast()) };
+    }
+
+    /// Fills a rounded rectangle with a vertical gradient.
+    pub fn fill_round_rect_v(&self, r: Rect, radius: f32, top: Color, bottom: Color) {
+        if top == bottom {
+            return self.fill_round_rect(r, radius, top);
+        }
+        let path = self.rounded_path(r, radius);
+        self.with_gradient(self.r(r), top, bottom, |b| unsafe {
+            GdipFillPath(self.g, b, path);
+        });
+        unsafe { GdipDeletePath(path) };
+    }
+
+    /// Outlines a rounded rectangle with a vertical gradient, inside the rectangle.
+    pub fn stroke_round_rect_v(&self, r: Rect, radius: f32, width: f32, top: Color, bottom: Color) {
+        if top == bottom {
+            return self.stroke_round_rect(r, radius, width, top);
+        }
+        let path = self.rounded_path(r.inset(width / 2.0, width / 2.0), radius);
+        self.with_gradient(self.r(r), top, bottom, |b| unsafe {
+            let mut pen = ptr::null_mut();
+            GdipCreatePen2(b, self.s(width), UnitPixel, &mut pen);
+            GdipDrawPath(self.g, pen, path);
+            GdipDeletePen(pen);
         });
         unsafe { GdipDeletePath(path) };
     }
@@ -364,6 +466,9 @@ impl Drop for Canvas {
             }
             GdipDeleteFontFamily(self.families[0]);
             GdipDeleteGraphics(self.g);
+            if !self.bitmap.is_null() {
+                GdipDisposeImage(self.bitmap.cast());
+            }
         }
     }
 }

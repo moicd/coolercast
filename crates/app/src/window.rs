@@ -1,25 +1,32 @@
 //! Settings window: a live preview of the cooler display, the recent history and the display
 //! settings, custom drawn with GDI+.
 //!
+//! On Windows 11 (22H2 and later) the window uses the Acrylic system backdrop and draws its
+//! cards as translucent glass on top; elsewhere it falls back to opaque colors. The blur is
+//! composed by Windows, so it costs this process nothing.
+//!
 //! The window only exists while it is open; closing it releases GDI+ and every drawing resource,
 //! so the tray icon alone stays as small as before.
 
 use std::cell::RefCell;
 use std::{mem, ptr};
 
-use coolercast_core::config::{self, Config, Mode, Unit};
+use coolercast_core::config::{self, Config, Mode, Symbol, Unit};
 use coolercast_core::ipc::{HISTORY_LEN, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{
-    DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
+    DWMSBT_TRANSIENTWINDOW, DWMWA_CAPTION_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-    EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
+    GetMonitorInfoW, HBITMAP, HDC, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SelectObject,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI,
 };
@@ -31,9 +38,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, IDC_ARROW,
     IsIconic, KillTimer, LoadCursorW, LoadIconW, PostMessageW, RegisterClassW, SW_RESTORE,
     SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_CAPTION,
-    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    ShowWindow, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETTINGCHANGE,
+    WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
 
 use crate::autostart;
@@ -42,22 +49,20 @@ use crate::preview::{self, Frame};
 use crate::theme::Theme;
 
 const CLASS: &str = "coolercast-settings";
-/// Defined in `Win32_UI_Controls`, a large feature for a single constant.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
 // Layout, in device-independent pixels: a status column on the left, settings on the right.
-const WIDTH: f32 = 756.0;
-const HEIGHT: f32 = 550.0;
+const WIDTH: f32 = 800.0;
+const HEIGHT: f32 = 610.0;
 const PAD: f32 = 20.0;
 const GAP: f32 = 16.0;
 const LEFT_W: f32 = 340.0;
 const RIGHT_X: f32 = PAD + LEFT_W + GAP;
 const RIGHT_W: f32 = WIDTH - RIGHT_X - PAD;
 const TOP: f32 = 84.0;
-const ROW_H: f32 = 48.0;
+const ROW_H: f32 = 44.0;
 const SECTION_TITLE_H: f32 = 26.0;
-const RADIUS: f32 = 8.0;
+const RADIUS: f32 = 12.0;
 
 /// Stepper changes are sent once the value stops changing for this long.
 const TIMER_COMMIT: usize = 1;
@@ -66,27 +71,35 @@ const COMMIT_DELAY_MS: u32 = 400;
 const TIMER_REPEAT: usize = 2;
 const REPEAT_DELAY_MS: u32 = 400;
 const REPEAT_RATE_MS: u32 = 60;
+/// Backspace in the custom number field.
+const BACKSPACE: char = '\u{8}';
 
 /// The interactive controls, in keyboard focus order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
+    Autostart,
     Mode,
     AutoInterval,
     Unit,
     Interval,
+    CustomValue,
+    CustomSymbol,
+    CustomBar,
     Alarm,
     Threshold,
-    Autostart,
 }
 
-const CONTROLS: [Control; 7] = [
+const CONTROLS: [Control; 10] = [
+    Control::Autostart,
     Control::Mode,
     Control::AutoInterval,
     Control::Unit,
     Control::Interval,
+    Control::CustomValue,
+    Control::CustomSymbol,
+    Control::CustomBar,
     Control::Alarm,
     Control::Threshold,
-    Control::Autostart,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +108,8 @@ enum Part {
     Minus,
     Plus,
     Switch,
+    /// The number of a stepper that also takes typed digits.
+    Field,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +124,9 @@ impl Control {
             Control::Autostart => true,
             _ if !online => false,
             Control::AutoInterval => config.mode == Mode::Auto,
+            Control::CustomValue | Control::CustomSymbol | Control::CustomBar => {
+                config.mode == Mode::Custom
+            }
             Control::Threshold => config.alarm,
             _ => true,
         }
@@ -116,8 +134,9 @@ impl Control {
 
     fn segments(self) -> &'static [&'static str] {
         match self {
-            Control::Mode => &["Temperature", "Usage", "Alternate"],
+            Control::Mode => &["Temperature", "Usage", "Alternate", "Custom"],
             Control::Unit => &["°C", "°F"],
+            Control::CustomSymbol => &["°C", "°F", "%"],
             _ => &[],
         }
     }
@@ -128,6 +147,12 @@ impl Control {
                 Mode::Temperature => 0,
                 Mode::Usage => 1,
                 Mode::Auto => 2,
+                Mode::Custom => 3,
+            },
+            Control::CustomSymbol => match config.custom_symbol {
+                Symbol::Celsius => 0,
+                Symbol::Fahrenheit => 1,
+                Symbol::Percent => 2,
             },
             Control::Unit => match config.unit {
                 Unit::Celsius => 0,
@@ -141,9 +166,14 @@ impl Control {
         let mut config = config.clone();
         match self {
             Control::Mode => {
-                config.mode = [Mode::Temperature, Mode::Usage, Mode::Auto][index.min(2)];
+                const MODES: [Mode; 4] = [Mode::Temperature, Mode::Usage, Mode::Auto, Mode::Custom];
+                config.mode = MODES[index.min(3)];
             }
             Control::Unit => config.unit = [Unit::Celsius, Unit::Fahrenheit][index.min(1)],
+            Control::CustomSymbol => {
+                const SYMBOLS: [Symbol; 3] = [Symbol::Celsius, Symbol::Fahrenheit, Symbol::Percent];
+                config.custom_symbol = SYMBOLS[index.min(2)];
+            }
             _ => {}
         }
         config
@@ -172,6 +202,26 @@ impl Control {
                 );
                 next.alarm_threshold = u8::try_from(value).unwrap_or(max);
             }
+            Control::CustomValue => {
+                let (min, max) = config::CUSTOM_VALUE;
+                let value = step(
+                    config.custom_value.into(),
+                    up,
+                    &[(u32::MAX, 1)],
+                    (min.into(), max.into()),
+                );
+                next.custom_value = u16::try_from(value).unwrap_or(max);
+            }
+            Control::CustomBar => {
+                let (min, max) = config::CUSTOM_BAR;
+                let value = step(
+                    config.custom_bar.into(),
+                    up,
+                    &[(u32::MAX, 1)],
+                    (min.into(), max.into()),
+                );
+                next.custom_bar = u8::try_from(value).unwrap_or(max);
+            }
             _ => return None,
         }
         (next != *config).then_some(next)
@@ -186,8 +236,25 @@ impl Control {
             Control::Interval => ("interval_ms", config.interval_ms.to_string()),
             Control::Alarm => ("alarm", config.alarm.to_string()),
             Control::Threshold => ("alarm_threshold", config.alarm_threshold.to_string()),
+            Control::CustomValue => ("custom_value", config.custom_value.to_string()),
+            Control::CustomSymbol => ("custom_symbol", config.custom_symbol.to_string()),
+            Control::CustomBar => ("custom_bar", config.custom_bar.to_string()),
             Control::Autostart => return None,
         })
+    }
+}
+
+/// The custom number after typing `key` into it. `fresh` starts a new number instead of
+/// appending; digits that would go past three are ignored.
+fn typed(value: u16, key: char, fresh: bool) -> Option<u16> {
+    match key {
+        BACKSPACE => Some(if fresh { 0 } else { value / 10 }),
+        '0'..='9' => {
+            let digit = key as u16 - '0' as u16;
+            let next = if fresh { digit } else { value * 10 + digit };
+            (next <= config::CUSTOM_VALUE.1).then_some(next)
+        }
+        _ => None,
     }
 }
 
@@ -311,6 +378,8 @@ struct Settings {
     focus: Option<Control>,
     /// The focus ring only shows after keyboard use, as in the rest of Windows.
     focus_visible: bool,
+    /// The next digit typed into the custom number appends to it instead of replacing it.
+    typing: bool,
     tracking_mouse: bool,
     // Last: shut down after everything else is released.
     _gdiplus: Gdiplus,
@@ -399,7 +468,8 @@ pub fn open() {
         return;
     }
 
-    let theme = Theme::current();
+    let glass = enable_backdrop(hwnd);
+    let theme = Theme::current(glass);
     let status = crate::current_status();
     let state = Settings {
         hwnd,
@@ -417,6 +487,7 @@ pub fn open() {
         pressed: None,
         focus: None,
         focus_visible: false,
+        typing: false,
         tracking_mouse: false,
         _gdiplus: gdiplus,
     };
@@ -462,10 +533,34 @@ fn window_size(dpi: u32) -> (i32, i32) {
     (rect.right - rect.left, rect.bottom - rect.top)
 }
 
-/// Dark title bar in dark mode; on Windows 11 the caption also takes the window background.
+/// Turns on the Acrylic backdrop behind the whole window. Fails before Windows 11 22H2.
+fn enable_backdrop(hwnd: HWND) -> bool {
+    let kind = DWMSBT_TRANSIENTWINDOW;
+    let set = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE as u32,
+            (&kind as *const i32).cast(),
+            size_of::<i32>() as u32,
+        )
+    };
+    if set < 0 {
+        return false;
+    }
+    // The backdrop shows wherever the client area is transparent.
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
+    unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) >= 0 }
+}
+
+/// Dark title bar in dark mode. Without the backdrop, Windows 11 also paints the caption with
+/// the window background.
 fn style_title_bar(hwnd: HWND, theme: &Theme) {
     let dark = i32::from(theme.dark);
-    let caption = theme.background_colorref();
     unsafe {
         DwmSetWindowAttribute(
             hwnd,
@@ -473,12 +568,17 @@ fn style_title_bar(hwnd: HWND, theme: &Theme) {
             (&dark as *const i32).cast(),
             size_of::<i32>() as u32,
         );
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_CAPTION_COLOR as u32,
-            (&caption as *const u32).cast(),
-            size_of::<u32>() as u32,
-        );
+    }
+    if !theme.glass {
+        let caption = theme.background_colorref();
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR as u32,
+                (&caption as *const u32).cast(),
+                size_of::<u32>() as u32,
+            );
+        }
     }
 }
 
@@ -545,6 +645,16 @@ unsafe extern "system" fn window_proc(
                 run(effect);
             }
         }
+        WM_CHAR => {
+            let effect = char::from_u32(wparam as u32)
+                .and_then(|ch| with(|s| s.typed(ch)))
+                .unwrap_or(Effect::None);
+            run(effect);
+        }
+        WM_MOUSEWHEEL => {
+            let delta = (wparam >> 16) as u16 as i16;
+            with(|s| s.wheel(delta > 0));
+        }
         WM_TIMER => {
             let effect = with(|s| s.timer(wparam)).unwrap_or(Effect::None);
             run(effect);
@@ -570,7 +680,8 @@ unsafe extern "system" fn window_proc(
             };
         }
         WM_SETTINGCHANGE if is_color_change(lparam) => {
-            let theme = Theme::current();
+            let glass = with(|s| s.theme.glass).unwrap_or(false);
+            let theme = Theme::current(glass);
             style_title_bar(hwnd, &theme);
             with(|s| {
                 s.theme = theme;
@@ -627,10 +738,21 @@ fn paint(hwnd: HWND) {
         let (w, h) = (client.right, client.bottom);
         // Draw off-screen and copy once, so nothing flickers.
         let mem_dc = CreateCompatibleDC(hdc);
-        let bitmap = CreateCompatibleBitmap(hdc, w, h);
+        let glass = with(|s| s.theme.glass).unwrap_or(false);
+        let (bitmap, bits) = if glass {
+            pixel_bitmap(hdc, w, h)
+        } else {
+            (CreateCompatibleBitmap(hdc, w, h), ptr::null_mut())
+        };
         let previous = SelectObject(mem_dc, bitmap);
         with(|s| {
-            if let Some(canvas) = Canvas::new(mem_dc, s.scale) {
+            // Glass needs per-pixel alpha, which only drawing on the pixels directly keeps.
+            let canvas = if bits.is_null() {
+                Canvas::new(mem_dc, s.scale)
+            } else {
+                Canvas::on_pixels(bits, w, h, s.scale)
+            };
+            if let Some(canvas) = canvas {
                 s.draw(&canvas);
             }
         });
@@ -640,6 +762,21 @@ fn paint(hwnd: HWND) {
         DeleteDC(mem_dc);
         EndPaint(hwnd, &ps);
     }
+}
+
+/// A 32-bit top-down DIB and its pixels.
+fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
+    let mut bmi: BITMAPINFO = unsafe { mem::zeroed() };
+    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    let mut bits = ptr::null_mut();
+    let bitmap =
+        unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
+    (bitmap, bits.cast())
 }
 
 impl Settings {
@@ -685,8 +822,10 @@ impl Settings {
             return Effect::None;
         };
         self.pressed = Some(hit);
-        self.focus = Some(hit.control);
+        self.set_focus(Some(hit.control));
         self.focus_visible = false;
+        // A click on the number or its buttons makes the next digit start a new number.
+        self.typing = false;
         self.invalidate();
         match hit.part {
             Part::Minus | Part::Plus => {
@@ -741,7 +880,9 @@ impl Settings {
         self.invalidate();
         if key == VK_TAB {
             let (config, online) = (self.config.clone(), self.online());
-            self.focus = next_focus(self.focus, !shift, |c| c.enabled(&config, online));
+            self.set_focus(next_focus(self.focus, !shift, |c| {
+                c.enabled(&config, online)
+            }));
             return Effect::None;
         }
         let Some(control) = self.focus.filter(|&c| self.enabled(c)) else {
@@ -756,13 +897,20 @@ impl Settings {
                         control,
                         part: Part::Switch,
                     }),
+                    // Enter confirms a typed number right away.
+                    Control::CustomValue if key == VK_RETURN => {
+                        self.typing = false;
+                        unsafe { KillTimer(self.hwnd, TIMER_COMMIT) };
+                        Effect::Send(self.take_unsent())
+                    }
                     _ => Effect::None,
                 };
             }
             _ => return Effect::None,
         };
+        self.typing = false;
         match control {
-            Control::Mode | Control::Unit => {
+            Control::Mode | Control::Unit | Control::CustomSymbol => {
                 let count = control.segments().len();
                 let current = control.selected_segment(&self.config);
                 let index = if forward {
@@ -778,11 +926,49 @@ impl Settings {
                     part: Part::Segment(index),
                 })
             }
-            Control::AutoInterval | Control::Interval | Control::Threshold => {
+            Control::AutoInterval
+            | Control::Interval
+            | Control::Threshold
+            | Control::CustomValue
+            | Control::CustomBar => {
                 self.step(control, forward);
                 Effect::None
             }
             Control::Alarm | Control::Autostart => Effect::None,
+        }
+    }
+
+    /// A character typed while the custom number has the focus.
+    fn typed(&mut self, key: char) -> Effect {
+        let control = Control::CustomValue;
+        if self.focus != Some(control) || !self.enabled(control) {
+            return Effect::None;
+        }
+        if let Some(value) = typed(self.config.custom_value, key, !self.typing) {
+            let config = Config {
+                custom_value: value,
+                ..self.config.clone()
+            };
+            self.set_local(control, config);
+            self.typing = true;
+        }
+        Effect::None
+    }
+
+    /// The mouse wheel steps the stepper under the cursor.
+    fn wheel(&mut self, up: bool) {
+        if let Some(hit) = self.hover
+            && matches!(hit.part, Part::Minus | Part::Plus | Part::Field)
+        {
+            self.typing = false;
+            self.step(hit.control, up);
+        }
+    }
+
+    fn set_focus(&mut self, focus: Option<Control>) {
+        if focus != self.focus {
+            self.focus = focus;
+            self.typing = false;
         }
     }
 
@@ -804,13 +990,18 @@ impl Settings {
 
     fn step(&mut self, control: Control, up: bool) {
         if let Some(config) = control.stepped(&self.config, up) {
-            self.config = config;
-            if !self.unsent.contains(&control) {
-                self.unsent.push(control);
-            }
-            unsafe { SetTimer(self.hwnd, TIMER_COMMIT, COMMIT_DELAY_MS, None) };
-            self.invalidate();
+            self.set_local(control, config);
         }
+    }
+
+    /// Shows a changed value at once and sends it when it settles.
+    fn set_local(&mut self, control: Control, config: Config) {
+        self.config = config;
+        if !self.unsent.contains(&control) {
+            self.unsent.push(control);
+        }
+        unsafe { SetTimer(self.hwnd, TIMER_COMMIT, COMMIT_DELAY_MS, None) };
+        self.invalidate();
     }
 
     /// Sends `control` now, along with any pending stepper changes.
@@ -835,10 +1026,10 @@ impl Settings {
 
     fn draw(&mut self, c: &Canvas) {
         let t = self.theme;
-        c.clear(t.background);
+        c.clear(t.backdrop);
         self.hits.clear();
 
-        // Header.
+        // Header: title, status line and the startup switch.
         c.text(
             "CoolerCast",
             Rect::new(PAD, PAD, 300.0, 28.0),
@@ -862,6 +1053,25 @@ impl Settings {
             t.text_dim,
             Align::Left,
         );
+        let startup = self.draw_switch(
+            c,
+            Control::Autostart,
+            self.autostart,
+            WIDTH - PAD,
+            PAD + 14.0,
+            true,
+        );
+        c.text(
+            "Start with Windows",
+            Rect::new(startup.x - 200.0, PAD + 4.0, 152.0, 20.0),
+            13.0,
+            Weight::Regular,
+            t.text,
+            Align::Right,
+        );
+        if self.focus_visible && self.focus == Some(Control::Autostart) {
+            c.stroke_round_rect(startup.inset(-3.0, -3.0), 13.0, 2.0, t.focus);
+        }
 
         self.draw_readout(c, Rect::new(PAD, TOP, LEFT_W, 142.0));
         self.draw_chart(
@@ -881,13 +1091,20 @@ impl Settings {
                 ],
             ),
             (
+                "Custom value",
+                &[
+                    (Control::CustomValue, "Number"),
+                    (Control::CustomSymbol, "Symbol"),
+                    (Control::CustomBar, "Bar"),
+                ],
+            ),
+            (
                 "Alarm",
                 &[
                     (Control::Alarm, "Blink when hot"),
                     (Control::Threshold, "Threshold"),
                 ],
             ),
-            ("Startup", &[(Control::Autostart, "Start with Windows")]),
         ];
         for (title, rows) in sections {
             c.text(
@@ -920,14 +1137,31 @@ impl Settings {
     }
 
     fn draw_card(&self, c: &Canvas, r: Rect) {
-        c.fill_round_rect(r, RADIUS, self.theme.card);
-        c.stroke_round_rect(r, RADIUS, 1.0, self.theme.border);
+        let t = &self.theme;
+        c.fill_round_rect_v(r, RADIUS, t.card_top, t.card_bottom);
+        c.stroke_round_rect_v(r, RADIUS, 1.0, t.edge_top, t.edge_bottom);
+    }
+
+    /// The glassy sheen on accent-filled controls: a highlight fading out over the top half.
+    fn gloss(&self, c: &Canvas, r: Rect, radius: f32) {
+        if self.theme.glass {
+            let top = Rect::new(r.x, r.y, r.w, r.h * 0.55);
+            let white = Color::rgb(0xFF, 0xFF, 0xFF);
+            c.fill_round_rect_v(top, radius, white.alpha(0x40), white.alpha(0x00));
+        }
     }
 
     fn draw_readout(&self, c: &Canvas, card: Rect) {
         let t = self.theme;
         self.draw_card(c, card);
-        let frame = self.status.as_ref().and_then(Frame::from_status);
+        // In custom mode the preview follows the settings as they are edited.
+        let status = self.status.as_ref();
+        let frame = match status {
+            Some(s) if self.config.mode == Mode::Custom => {
+                Some(Frame::custom(&self.config, s.alarm_active))
+            }
+            _ => status.and_then(Frame::from_status),
+        };
         preview::draw(
             c,
             Rect::new(card.x + 16.0, card.y + 16.0, 184.0, 110.0),
@@ -1123,9 +1357,19 @@ impl Settings {
         let cy = row.y + row.h / 2.0;
         let focused = self.focus_visible && self.focus == Some(control);
         let area = match control {
-            Control::Mode | Control::Unit => self.draw_segmented(c, control, right, cy, enabled),
+            Control::Mode | Control::Unit | Control::CustomSymbol => {
+                self.draw_segmented(c, control, right, cy, enabled)
+            }
             Control::Alarm => self.draw_switch(c, control, self.config.alarm, right, cy, enabled),
             Control::Autostart => self.draw_switch(c, control, self.autostart, right, cy, enabled),
+            Control::CustomValue => {
+                let text = self.config.custom_value.to_string();
+                self.draw_stepper(c, control, &text, right, cy, enabled)
+            }
+            Control::CustomBar => {
+                let text = format!("{} / {}", self.config.custom_bar, config::CUSTOM_BAR.1);
+                self.draw_stepper(c, control, &text, right, cy, enabled)
+            }
             Control::AutoInterval => {
                 let text = format_seconds(self.config.auto_interval_s);
                 self.draw_stepper(c, control, &text, right, cy, enabled)
@@ -1190,6 +1434,9 @@ impl Settings {
             };
             if let Some(fill) = fill {
                 c.fill_round_rect(r, 4.0, fade(fill, enabled));
+                if i == selected && enabled {
+                    self.gloss(c, r, 4.0);
+                }
             }
             c.text(option, r, 12.5, weight, fade(text, enabled), Align::Center);
             self.hits.push((hit, r));
@@ -1221,6 +1468,9 @@ impl Settings {
                 t.accent
             };
             c.fill_round_rect(track, 10.0, fade(fill, enabled));
+            if enabled {
+                self.gloss(c, track, 10.0);
+            }
             c.fill_circle(track.right() - 10.0, cy, 6.0, fade(t.on_accent, enabled));
         } else {
             if hovered {
@@ -1285,21 +1535,54 @@ impl Settings {
                 self.hits.push((hit, r));
             }
         }
+        let field = Rect::new(area.x + 32.0, area.y, area.w - 64.0, area.h);
+        if control == Control::CustomValue {
+            // A text box look: this number also takes typed digits.
+            let hovered = self
+                .state(Hit {
+                    control,
+                    part: Part::Field,
+                })
+                .0;
+            let fill = if hovered && enabled {
+                t.control_hover
+            } else {
+                t.control
+            };
+            c.fill_round_rect(field, 4.0, fade(fill, enabled));
+            if enabled && self.focus == Some(control) {
+                let y = field.bottom() - 1.0;
+                c.line(field.x + 3.0, y, field.right() - 3.0, y, 2.0, t.accent);
+            }
+        }
         c.text(
             value,
-            Rect::new(area.x + 28.0, area.y, area.w - 56.0, area.h),
+            field,
             13.0,
             Weight::Semibold,
-            fade(self.theme.text, enabled),
+            fade(t.text, enabled),
             Align::Center,
         );
+        // The whole stepper takes focus on click and steps with the mouse wheel.
+        self.hits.push((
+            Hit {
+                control,
+                part: Part::Field,
+            },
+            area,
+        ));
         area
     }
 }
 
-/// Dims colors of disabled controls.
+/// Dims colors of disabled controls, keeping translucent colors proportionally translucent.
 fn fade(color: Color, enabled: bool) -> Color {
-    if enabled { color } else { color.alpha(0x60) }
+    if enabled {
+        color
+    } else {
+        let alpha = (color.0 >> 24) * 0x60 / 0xFF;
+        color.alpha(alpha as u8)
+    }
 }
 
 #[cfg(test)]
@@ -1365,22 +1648,84 @@ mod tests {
 
     #[test]
     fn focus_skips_disabled_controls_and_wraps() {
-        let enabled = |c| !matches!(c, Control::AutoInterval | Control::Threshold);
-        assert_eq!(next_focus(None, true, enabled), Some(Control::Mode));
+        let enabled = |c| {
+            !matches!(
+                c,
+                Control::AutoInterval
+                    | Control::CustomValue
+                    | Control::CustomSymbol
+                    | Control::CustomBar
+                    | Control::Threshold
+            )
+        };
+        assert_eq!(next_focus(None, true, enabled), Some(Control::Autostart));
         assert_eq!(
             next_focus(Some(Control::Mode), true, enabled),
             Some(Control::Unit)
         );
         assert_eq!(
-            next_focus(Some(Control::Autostart), true, enabled),
-            Some(Control::Mode)
+            next_focus(Some(Control::Interval), true, enabled),
+            Some(Control::Alarm)
         );
         assert_eq!(
-            next_focus(Some(Control::Mode), false, enabled),
+            next_focus(Some(Control::Alarm), true, enabled),
             Some(Control::Autostart)
         );
-        assert_eq!(next_focus(None, false, enabled), Some(Control::Autostart));
+        assert_eq!(
+            next_focus(Some(Control::Autostart), false, enabled),
+            Some(Control::Alarm)
+        );
+        assert_eq!(next_focus(None, false, enabled), Some(Control::Alarm));
         assert_eq!(next_focus(None, true, |_| false), None);
+    }
+
+    #[test]
+    fn custom_controls_follow_custom_mode() {
+        let config = Config::default();
+        assert!(!Control::CustomValue.enabled(&config, true));
+        let custom = Control::Mode.with_segment(&config, 3);
+        assert_eq!(custom.mode, Mode::Custom);
+        assert!(Control::CustomValue.enabled(&custom, true));
+        assert!(Control::CustomBar.enabled(&custom, true));
+        let percent = Control::CustomSymbol.with_segment(&custom, 2);
+        assert_eq!(percent.custom_symbol, Symbol::Percent);
+        assert_eq!(Control::CustomSymbol.selected_segment(&percent), 2);
+    }
+
+    #[test]
+    fn custom_steppers_stay_in_range() {
+        let config = Config {
+            custom_value: 999,
+            custom_bar: 1,
+            ..Config::default()
+        };
+        assert_eq!(Control::CustomValue.stepped(&config, true), None);
+        assert_eq!(Control::CustomBar.stepped(&config, false), None);
+        assert_eq!(
+            Control::CustomValue
+                .stepped(&config, false)
+                .unwrap()
+                .custom_value,
+            998
+        );
+        assert_eq!(
+            Control::CustomBar
+                .stepped(&config, true)
+                .unwrap()
+                .custom_bar,
+            2
+        );
+    }
+
+    #[test]
+    fn typing_builds_up_to_three_digits() {
+        assert_eq!(typed(42, '7', true), Some(7));
+        assert_eq!(typed(4, '2', false), Some(42));
+        assert_eq!(typed(42, '5', false), Some(425));
+        assert_eq!(typed(425, '1', false), None);
+        assert_eq!(typed(425, BACKSPACE, false), Some(42));
+        assert_eq!(typed(425, BACKSPACE, true), Some(0));
+        assert_eq!(typed(42, 'x', false), None);
     }
 
     #[test]
@@ -1413,6 +1758,14 @@ mod tests {
                 assert!(Config::default().set(key, &value).is_ok(), "{key}={value}");
             }
         }
+    }
+
+    #[test]
+    fn fade_dims_translucent_colors_too() {
+        let alpha = |c: Color| c.0 >> 24;
+        assert_eq!(alpha(fade(Color::rgb(1, 2, 3), false)), 0x60);
+        assert_eq!(alpha(fade(Color::rgb(0, 0, 0).alpha(0x0C), false)), 0x04);
+        assert_eq!(fade(Color::rgb(1, 2, 3), true), Color::rgb(1, 2, 3));
     }
 
     #[test]
