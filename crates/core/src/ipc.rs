@@ -172,6 +172,7 @@ pub const HISTORY_LEN: usize = 120;
 pub enum Shown {
     Temperature,
     Usage,
+    Custom,
 }
 
 /// One sensor reading per refresh interval.
@@ -222,6 +223,7 @@ impl Status {
             match self.shown {
                 Some(Shown::Temperature) => "temperature",
                 Some(Shown::Usage) => "usage",
+                Some(Shown::Custom) => "custom",
                 None => "",
             },
         );
@@ -268,6 +270,7 @@ impl Status {
                     status.shown = match value {
                         "temperature" => Some(Shown::Temperature),
                         "usage" => Some(Shown::Usage),
+                        "custom" => Some(Shown::Custom),
                         _ => None,
                     }
                 }
