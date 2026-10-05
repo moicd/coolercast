@@ -1,4 +1,4 @@
-//! CPU package temperature through PawnIO.
+//! CPU package temperature on Windows x64, through PawnIO.
 //!
 //! - Intel: `IA32_TEMPERATURE_TARGET` (TjMax) minus the digital readout of
 //!   `IA32_PACKAGE_THERM_STATUS` (or `IA32_THERM_STATUS` without package sensors).
@@ -10,8 +10,8 @@ use std::{fs, io};
 
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
-use super::pawnio::PawnIo;
 use crate::paths;
+use crate::sensors::pawnio::PawnIo;
 use crate::win::{Handle, wide};
 
 const MSR_IA32_THERM_STATUS: u64 = 0x19C;

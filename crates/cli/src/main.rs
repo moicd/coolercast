@@ -1,6 +1,8 @@
-//! coolercast: CLI and Windows service of CoolerCast, which shows CPU temperature and usage on
-//! the display of DeepCool coolers.
+//! coolercast: CLI and service of CoolerCast, which shows CPU temperature and usage on the
+//! display of DeepCool coolers. On Windows it is also the Windows service; on Linux systemd runs
+//! `coolercast run`.
 
+#[cfg(windows)]
 mod service;
 
 use std::error::Error;
@@ -16,10 +18,7 @@ use coolercast_core::device::{self, Cooler, Reading, ak};
 use coolercast_core::engine::Engine;
 use coolercast_core::sensors::cpu_temp::CpuTemp;
 use coolercast_core::sensors::cpu_usage::CpuUsage;
-use coolercast_core::win::{self, Event};
-use coolercast_core::{ipc, log, paths};
-use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
-use windows_sys::core::BOOL;
+use coolercast_core::{error, ipc, log, paths};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
@@ -34,17 +33,36 @@ Commands:
   run               Drive the coolers in the foreground (Ctrl+C to stop)
   status            Show what the running service is doing
   set <key=value>   Change a setting of the running service, e.g. `set mode=auto`
-  install           Install and start the Windows service (administrator)
-  uninstall         Stop and remove the Windows service (administrator)
-  start | stop      Start or stop the installed service (administrator)
-  version           Print the version
+{service}  version           Print the version
 
 Settings: mode (temperature|usage|auto|custom), unit (celsius|fahrenheit), alarm (on|off),
           alarm_threshold (°C), interval_ms, auto_interval_s,
           custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10)
 ";
 
-const OFFICIAL_APP: &str = "DeepCool.exe";
+#[cfg(windows)]
+const SERVICE_USAGE: &str = "\
+  install           Install and start the Windows service (administrator)
+  uninstall         Stop and remove the Windows service (administrator)
+  start | stop      Start or stop the installed service (administrator)
+";
+
+#[cfg(target_os = "linux")]
+const SERVICE_USAGE: &str = "";
+
+/// How to stop and start the service, for messages.
+#[cfg(windows)]
+const STOP_HINT: &str = "`coolercast stop` (as administrator)";
+#[cfg(target_os = "linux")]
+const STOP_HINT: &str = "`sudo systemctl stop coolercast`";
+#[cfg(windows)]
+const START_HINT: &str = "`coolercast start` (as administrator)";
+#[cfg(target_os = "linux")]
+const START_HINT: &str = "`sudo systemctl start coolercast`";
+
+fn usage() -> String {
+    USAGE.replace("{service}", SERVICE_USAGE)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -56,20 +74,31 @@ fn main() -> ExitCode {
         "run" => run_foreground(),
         "status" => status(),
         "set" => set(&args[1..]),
+        #[cfg(windows)]
         "install" => service::install(),
+        #[cfg(windows)]
         "uninstall" => service::uninstall(),
+        #[cfg(windows)]
         "start" => service::start(),
+        #[cfg(windows)]
         "stop" => service::stop(),
+        #[cfg(windows)]
         "service" => service::run(),
+        #[cfg(target_os = "linux")]
+        "install" | "uninstall" | "start" | "stop" => Err(
+            "on Linux, install CoolerCast with the install.sh script from the release and manage \
+             the service with `systemctl`"
+                .into(),
+        ),
         "version" | "--version" | "-V" => {
             println!("coolercast {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            print!("{}", usage());
             Ok(())
         }
-        other => Err(format!("unknown command '{other}'\n\n{USAGE}").into()),
+        other => Err(format!("unknown command '{other}'\n\n{}", usage()).into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -80,8 +109,12 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn warn_if_official_app_running() {}
+
+#[cfg(windows)]
 fn warn_if_official_app_running() {
-    if win::process_running(OFFICIAL_APP) {
+    if coolercast_core::win::process_running("DeepCool.exe") {
         eprintln!(
             "warning: the official DeepCool app is running and will overwrite the display.\n\
              Close it from its tray icon and disable it at startup.\n"
@@ -110,9 +143,9 @@ fn list() -> Result {
     }
 
     println!("CPU temperature");
-    match CpuTemp::open().and_then(|mut t| Ok((t.read()?, t.source()))) {
+    match CpuTemp::open().and_then(|mut t| Ok((t.read()?, t.source().to_owned()))) {
         Ok((celsius, source)) => println!("  {celsius:.0} °C from {source}"),
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+        Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied => {
             println!("  unavailable: {e}\n  Run this command from an elevated terminal.")
         }
         Err(e) => println!("  unavailable: {e}"),
@@ -226,9 +259,10 @@ fn parse_probe(args: &[String]) -> Result<(ProbeField, u8, u8)> {
 
 fn probe(args: &[String]) -> Result {
     if ipc::query_status().is_ok() {
-        return Err("the service is running and would overwrite the display.\n\
-                    Stop it first with `coolercast stop` (as administrator)."
-            .into());
+        return Err(format!(
+            "the service is running and would overwrite the display.\nStop it first with {STOP_HINT}."
+        )
+        .into());
     }
     warn_if_official_app_running();
     let mut coolers: Vec<Cooler> = device::detect()?
@@ -308,37 +342,70 @@ fn probe(args: &[String]) -> Result {
             println!("| {value} | `{payload:?}` | {note} |");
         }
     }
-    println!("\nDone. Start the service again with `coolercast start` (as administrator).");
+    println!("\nDone. Start the service again with {START_HINT}.");
     Ok(())
 }
 
-static CONSOLE_STOP: OnceLock<Arc<Event>> = OnceLock::new();
-
-unsafe extern "system" fn on_console_ctrl(_ctrl_type: u32) -> BOOL {
-    if let Some(stop) = CONSOLE_STOP.get() {
-        stop.set();
+/// Loads the settings, creates the engine and serves IPC requests for it. The IPC result is
+/// returned separately so callers can decide whether it is fatal.
+fn start_engine() -> (Arc<Engine>, io::Result<()>) {
+    let config_path = paths::config_file();
+    let config = Config::load(&config_path).unwrap_or_else(|e| {
+        error!("invalid {}, using defaults: {e}", config_path.display());
+        Config::default()
+    });
+    if !config_path.exists() {
+        // Fails without write access (e.g. `run` as a normal user); the defaults still apply.
+        let _ = config.save(&config_path);
     }
-    1
+    let engine = Arc::new(Engine::new(config, Some(config_path)));
+    let ipc_engine = Arc::clone(&engine);
+    let ipc = ipc::serve(move |request| ipc_engine.handle_request(request)).map(|_| ());
+    (engine, ipc)
 }
+
+static FOREGROUND: OnceLock<Arc<Engine>> = OnceLock::new();
+
+#[cfg(windows)]
+fn stop_on_ctrl_c() {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows_sys::core::BOOL;
+
+    unsafe extern "system" fn on_console_ctrl(_ctrl_type: u32) -> BOOL {
+        if let Some(engine) = FOREGROUND.get() {
+            engine.stop();
+        }
+        1
+    }
+    unsafe { SetConsoleCtrlHandler(Some(on_console_ctrl), 1) };
+}
+
+/// SIGINT and SIGTERM keep their default action: the process exits, which needs no cleanup.
+#[cfg(target_os = "linux")]
+fn stop_on_ctrl_c() {}
 
 fn run_foreground() -> Result {
     warn_if_official_app_running();
     log::init(None, true);
 
-    let config_path = paths::config_file();
-    let config = Config::load(&config_path)?;
-    let engine = Arc::new(Engine::new(config, Some(config_path))?);
+    let (engine, ipc) = start_engine();
+    match ipc {
+        Ok(()) => {}
+        // Another instance owns the control channel: two engines would fight over the display.
+        Err(e) if cfg!(windows) || e.kind() == io::ErrorKind::AddrInUse => {
+            return Err(format!(
+                "cannot open the control channel ({e}); is the service already running?"
+            )
+            .into());
+        }
+        Err(e) => coolercast_core::warn!(
+            "control socket unavailable, `status` and `set` will not work: {e}"
+        ),
+    }
 
-    let ipc_engine = Arc::clone(&engine);
-    ipc::serve(move |request| ipc_engine.handle_request(request)).map_err(|e| {
-        format!("cannot open the control pipe ({e}); is the service already running?")
-    })?;
-
-    let stop = Arc::new(Event::new(true)?);
-    let _ = CONSOLE_STOP.set(Arc::clone(&stop));
-    unsafe { SetConsoleCtrlHandler(Some(on_console_ctrl), 1) };
-
-    engine.run(&stop);
+    let _ = FOREGROUND.set(Arc::clone(&engine));
+    stop_on_ctrl_c();
+    engine.run();
     Ok(())
 }
 

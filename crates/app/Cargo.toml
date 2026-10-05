@@ -15,7 +15,7 @@ coolercast-core.workspace = true
 [build-dependencies]
 embed-resource.workspace = true
 
-[dependencies.windows-sys]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = [
     "Win32_Foundation",

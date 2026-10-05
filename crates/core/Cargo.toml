@@ -13,7 +13,7 @@ publish = false
 serde.workspace = true
 toml.workspace = true
 
-[dependencies.windows-sys]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = [
     "Win32_Devices_DeviceAndDriverInstallation",

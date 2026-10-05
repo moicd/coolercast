@@ -6,10 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use coolercast_core::config::Config;
-use coolercast_core::engine::Engine;
-use coolercast_core::win::{self, Event};
-use coolercast_core::{error, info, ipc, log, paths};
+use coolercast_core::win;
+use coolercast_core::{error, info, log, paths};
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
     ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
@@ -48,11 +46,14 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run_service() -> Result {
-    let stop = Arc::new(Event::new(true)?);
-    let handler_stop = Arc::clone(&stop);
+    let (engine, ipc) = crate::start_engine();
+    if let Err(e) = ipc {
+        error!("control pipe unavailable: {e}");
+    }
+    let handler_engine = Arc::clone(&engine);
     let status = service_control_handler::register(SERVICE_NAME, move |control| match control {
         ServiceControl::Stop | ServiceControl::Shutdown => {
-            handler_stop.set();
+            handler_engine.stop();
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -74,21 +75,7 @@ fn run_service() -> Result {
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
     )?;
 
-    let config_path = paths::config_file();
-    let config = Config::load(&config_path).unwrap_or_else(|e| {
-        error!("invalid {}, using defaults: {e}", config_path.display());
-        Config::default()
-    });
-    if !config_path.exists() {
-        let _ = config.save(&config_path);
-    }
-    let engine = Arc::new(Engine::new(config, Some(config_path))?);
-    let ipc_engine = Arc::clone(&engine);
-    if let Err(e) = ipc::serve(move |request| ipc_engine.handle_request(request)) {
-        error!("control pipe unavailable: {e}");
-    }
-
-    engine.run(&stop);
+    engine.run();
     report(ServiceState::Stopped, ServiceControlAccept::empty())?;
     Ok(())
 }

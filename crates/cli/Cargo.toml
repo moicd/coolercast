@@ -11,12 +11,14 @@ publish = false
 
 [dependencies]
 coolercast-core.workspace = true
-windows-service.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true
 
-[dependencies.windows-sys]
+[target.'cfg(windows)'.dependencies]
+windows-service.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = ["Win32_Foundation", "Win32_System_Console"]
 
