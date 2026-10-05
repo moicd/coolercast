@@ -1,0 +1,3 @@
+# CoolerCast: give the logged-in user access to DeepCool cooler displays (vendor 0x3633), so
+# `coolercast list`, `test` and `probe` work without sudo. The service runs as root anyway.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3633", MODE="0660", TAG+="uaccess"
