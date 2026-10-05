@@ -102,6 +102,7 @@ jobs:
             wix build packaging/windows/coolercast.wxs -arch $arch -ext WixToolset.UI.wixext `
               -d Version=$version -d BinDir=bin/$arch -o "dist/coolercast-$version-windows-$arch.msi"
             if ($LASTEXITCODE) { throw "wix build failed for $arch" }
+            Remove-Item "dist/coolercast-$version-windows-$arch.wixpdb"
 
             $portable = "portable/$arch/CoolerCast"
             New-Item -ItemType Directory -Force "$portable/modules" | Out-Null
