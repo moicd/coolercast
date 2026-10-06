@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{env, mem, ptr};
 
+use crate::i18n::{self, fill};
 use crate::{autostart, icon, window};
 use coolercast_core::config::{Bar, Mode, Source, Unit};
 use coolercast_core::ipc::{self, Status};
@@ -85,6 +86,7 @@ pub fn main() {
         }
         return;
     }
+    i18n::load();
     autostart::update();
 
     unsafe {
@@ -257,8 +259,9 @@ fn icon_content(status: Option<&Status>) -> (String, icon::Rgb) {
 }
 
 fn tooltip(status: Option<&Status>) -> String {
+    let tx = i18n::text();
     let Some(s) = status else {
-        return "CoolerCast\nService not running".into();
+        return format!("CoolerCast\n{}", tx.service_down);
     };
     let unit = s.config.unit;
     let temp = s.cpu_temp.map_or("--".into(), |t| {
@@ -266,7 +269,7 @@ fn tooltip(status: Option<&Status>) -> String {
     });
     let usage = s.cpu_usage.map_or("--".into(), |u| format!("{u:.0} %"));
     let devices = if s.devices.is_empty() {
-        "No cooler connected".into()
+        tx.no_cooler.into()
     } else {
         s.devices.join(", ")
     };
@@ -284,6 +287,7 @@ fn show_menu(hwnd: HWND) {
     // Copy what the menu needs: TrackPopupMenu runs a modal loop that re-enters window_proc.
     let status = APP.with(|app| app.borrow().as_ref().and_then(|a| a.status.clone()));
     let autostart = autostart::enabled();
+    let tx = i18n::text();
     set_interactive(true);
 
     let command = unsafe {
@@ -305,20 +309,20 @@ fn show_menu(hwnd: HWND) {
                 .nth(1)
                 .unwrap_or_default()
                 .to_owned(),
-            None => "Service not running".into(),
+            None => tx.service_down.into(),
         };
         item(menu, 0, &header, false, false);
         if let Some(error) = status.as_ref().and_then(|s| s.temp_error.as_ref()) {
             item(
                 menu,
                 0,
-                &format!("Temperature unavailable: {error}"),
+                &format!("{}: {error}", tx.temperature_unavailable),
                 false,
                 false,
             );
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        item(menu, ID_SETTINGS, "Settings", false, true);
+        item(menu, ID_SETTINGS, tx.settings, false, true);
         SetMenuDefaultItem(menu, ID_SETTINGS as u32, 0);
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
 
@@ -332,50 +336,46 @@ fn show_menu(hwnd: HWND) {
         item(
             modes,
             ID_MODE_TEMPERATURE,
-            "Temperature",
+            tx.temperature,
             online && config.mode == Mode::Temperature,
             online,
         );
         item(
             modes,
             ID_MODE_USAGE,
-            "Usage",
+            tx.usage,
             online && config.mode == Mode::Usage,
             online,
         );
         item(
             modes,
             ID_MODE_AUTO,
-            "Alternate",
+            tx.alternate,
             online && config.mode == Mode::Auto,
             online,
         );
         item(
             modes,
             ID_MODE_POWER,
-            "Power (LS series)",
+            tx.power_ls,
             online && config.mode == Mode::Power,
             online,
         );
         item(
             modes,
             ID_MODE_CUSTOM,
-            "Custom value",
+            tx.custom_value,
             online && config.mode == Mode::Custom,
             online,
         );
-        AppendMenuW(menu, MF_POPUP, modes as usize, wide("Display").as_ptr());
+        AppendMenuW(menu, MF_POPUP, modes as usize, wide(tx.display).as_ptr());
 
         let sources = CreatePopupMenu();
         for (id, label, source) in [
             (ID_SOURCE_CPU, "CPU", Source::Cpu),
             (ID_SOURCE_GPU, "GPU", Source::Gpu),
-            (ID_SOURCE_AUTO, "Alternate", Source::Auto),
-            (
-                ID_SOURCE_SMART,
-                "GPU while busy, CPU otherwise",
-                Source::Smart,
-            ),
+            (ID_SOURCE_AUTO, tx.alternate, Source::Auto),
+            (ID_SOURCE_SMART, tx.gpu_while_busy, Source::Smart),
         ] {
             item(
                 sources,
@@ -385,43 +385,45 @@ fn show_menu(hwnd: HWND) {
                 online,
             );
         }
-        AppendMenuW(menu, MF_POPUP, sources as usize, wide("Device").as_ptr());
+        AppendMenuW(menu, MF_POPUP, sources as usize, wide(tx.device).as_ptr());
 
         let units = CreatePopupMenu();
         item(
             units,
             ID_UNIT_CELSIUS,
-            "Celsius (°C)",
+            tx.celsius,
             online && config.unit == Unit::Celsius,
             online,
         );
         item(
             units,
             ID_UNIT_FAHRENHEIT,
-            "Fahrenheit (°F)",
+            tx.fahrenheit,
             online && config.unit == Unit::Fahrenheit,
             online,
         );
-        AppendMenuW(menu, MF_POPUP, units as usize, wide("Unit").as_ptr());
+        AppendMenuW(menu, MF_POPUP, units as usize, wide(tx.unit).as_ptr());
         item(
             menu,
             ID_USAGE_BAR,
-            "Bar shows usage",
+            tx.usage_bar,
             online && config.bar == Bar::Usage,
             online,
         );
 
         let off = CreatePopupMenu();
-        let night = format!("At night ({}–{})", config.night_start, config.night_end);
+        let night = fill(
+            tx.at_night_between,
+            &[
+                &config.night_start.to_string(),
+                &config.night_end.to_string(),
+            ],
+        );
         for (id, label, on) in [
-            (
-                ID_OFF_LOCKED,
-                "When the PC is locked",
-                config.off_when_locked,
-            ),
+            (ID_OFF_LOCKED, tx.when_locked, config.off_when_locked),
             (
                 ID_OFF_SCREEN,
-                "When the screen turns off",
+                tx.when_screen_off,
                 config.off_when_screen_off,
             ),
             (ID_OFF_NIGHT, night.as_str(), config.off_at_night),
@@ -432,14 +434,14 @@ fn show_menu(hwnd: HWND) {
             menu,
             MF_POPUP,
             off as usize,
-            wide("Turn display off").as_ptr(),
+            wide(tx.turn_display_off).as_ptr(),
         );
 
-        let alarm_label = format!("Alarm at {} °C", config.alarm_threshold);
+        let alarm_label = fill(tx.alarm_at, &[&config.alarm_threshold.to_string()]);
         item(menu, ID_ALARM, &alarm_label, online && config.alarm, online);
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        item(menu, ID_AUTOSTART, "Start with Windows", autostart, true);
-        item(menu, ID_EXIT, "Exit", false, true);
+        item(menu, ID_AUTOSTART, tx.start_with_windows, autostart, true);
+        item(menu, ID_EXIT, tx.exit, false, true);
 
         let mut cursor = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor);

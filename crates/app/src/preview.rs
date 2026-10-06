@@ -1,5 +1,5 @@
-//! Simulated AK series display: three seven-segment digits, the unit symbols and the 10-step
-//! bar, lit the same way as the real one.
+//! Simulated AK series display: the 10-step bar on top, three seven-segment digits and the unit
+//! symbols under it, lit the same way as the real one.
 
 use coolercast_core::config::{Bar, Config, Symbol, Unit};
 use coolercast_core::device::{self, Component, Family, ak};
@@ -118,8 +118,29 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     let symbols_w = 40.0 * k;
     let total_w = 3.0 * digit_w + 2.0 * gap + 16.0 * k + symbols_w;
     let x0 = area.x + (area.w - total_w) / 2.0;
-    let y0 = area.y + 16.0 * k;
 
+    // Bar: ten segments across the top, above the digits, red while the alarm is on.
+    let alarm = frame.is_some_and(|f| f.alarm);
+    let level = frame.map_or(0, |f| f.bar);
+    let bar_y = area.y + 16.0 * k;
+    let bar_h = 8.0 * k;
+    let seg_gap = 4.0 * k;
+    let seg_w = (total_w - 9.0 * seg_gap) / 10.0;
+    for i in 0..10u8 {
+        let r = Rect::new(x0 + f32::from(i) * (seg_w + seg_gap), bar_y, seg_w, bar_h);
+        let color = match (i < level, alarm) {
+            (true, true) => ALARM,
+            (true, false) => LIT,
+            _ => {
+                c.fill_round_rect(r, 2.0 * k, UNLIT);
+                continue;
+            }
+        };
+        c.fill_round_rect(r.inset(-2.5 * k, -2.5 * k), 4.0 * k, color.alpha(0x1C));
+        c.fill_round_rect(r, 2.0 * k, color);
+    }
+
+    let y0 = bar_y + bar_h + 16.0 * k;
     for i in 0..3 {
         let digit = frame.and_then(|f| f.digits[i]);
         let mask = digit.map_or(0, |d| DIGIT_SEGMENTS[d as usize]);
@@ -145,26 +166,6 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
         }
         let color = if on { LIT } else { UNLIT };
         c.text(label, r, 14.0 * k, Weight::Semibold, color, Align::Left);
-    }
-
-    // Bar: ten segments under the digits, red while the alarm is on.
-    let alarm = frame.is_some_and(|f| f.alarm);
-    let level = frame.map_or(0, |f| f.bar);
-    let bar_y = y0 + digit_h + 16.0 * k;
-    let seg_gap = 4.0 * k;
-    let seg_w = (total_w - 9.0 * seg_gap) / 10.0;
-    for i in 0..10u8 {
-        let r = Rect::new(x0 + f32::from(i) * (seg_w + seg_gap), bar_y, seg_w, 8.0 * k);
-        let color = match (i < level, alarm) {
-            (true, true) => ALARM,
-            (true, false) => LIT,
-            _ => {
-                c.fill_round_rect(r, 2.0 * k, UNLIT);
-                continue;
-            }
-        };
-        c.fill_round_rect(r.inset(-2.5 * k, -2.5 * k), 4.0 * k, color.alpha(0x1C));
-        c.fill_round_rect(r, 2.0 * k, color);
     }
 }
 

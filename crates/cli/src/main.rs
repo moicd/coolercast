@@ -617,8 +617,10 @@ fn status() -> Result {
         println!("Display      off ({why})");
     }
     println!();
-    for (key, value) in s.config.entries() {
-        println!("{key:<16} {value}");
+    let entries = s.config.entries();
+    let width = entries.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
+    for (key, value) in entries {
+        println!("{key:<width$} {value}");
     }
     Ok(())
 }
