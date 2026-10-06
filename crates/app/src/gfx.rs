@@ -85,11 +85,13 @@ pub enum Align {
     Right,
 }
 
-/// Font weight; maps to the regular and semibold faces of Segoe UI.
+/// Font weight; maps to the regular and semibold faces of Segoe UI. `Icon` draws glyphs of the
+/// Windows icon font (Segoe Fluent Icons, or Segoe MDL2 Assets before Windows 11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Weight {
     Regular,
     Semibold,
+    Icon,
 }
 
 struct Font {
@@ -106,7 +108,7 @@ pub struct Canvas {
     /// The bitmap `g` draws on when created with [`Canvas::on_pixels`].
     bitmap: *mut GpBitmap,
     scale: f32,
-    families: [*mut GpFontFamily; 2],
+    families: [*mut GpFontFamily; 3],
     format: *mut GpStringFormat,
     fonts: RefCell<Vec<Font>>,
 }
@@ -183,6 +185,7 @@ impl Canvas {
             f
         });
         let semibold = family(&["Segoe UI Semibold"]).unwrap_or(regular);
+        let icons = family(&["Segoe Fluent Icons", "Segoe MDL2 Assets"]).unwrap_or(regular);
         // Typographic layout: no extra padding around the text.
         let mut generic = ptr::null_mut();
         let mut format = ptr::null_mut();
@@ -197,7 +200,7 @@ impl Canvas {
             g,
             bitmap,
             scale,
-            families: [regular, semibold],
+            families: [regular, semibold, icons],
             format,
             fonts: RefCell::new(Vec::new()),
         }
@@ -461,10 +464,12 @@ impl Drop for Canvas {
                 GdipDeleteFont(font.raw);
             }
             GdipDeleteStringFormat(self.format);
-            if self.families[1] != self.families[0] {
-                GdipDeleteFontFamily(self.families[1]);
+            // Fallbacks share the regular family: delete each one once.
+            for (i, &family) in self.families.iter().enumerate() {
+                if !self.families[..i].contains(&family) {
+                    GdipDeleteFontFamily(family);
+                }
             }
-            GdipDeleteFontFamily(self.families[0]);
             GdipDeleteGraphics(self.g);
             if !self.bitmap.is_null() {
                 GdipDisposeImage(self.bitmap.cast());

@@ -40,12 +40,15 @@ These links always point to the latest version. Older versions, release notes an
 - CPU power and frequency for the displays that show them (LS, LD, LQ and DIGITAL PRO models),
   read only while such a display is connected.
 - GPU temperature, usage, power and clock (NVIDIA, AMD and Intel) for the CH series cases, and on
-  any display with `source = "gpu"` or `"auto"` (alternates CPU and GPU).
+  any display with `source = "gpu"`, `"auto"` (alternates CPU and GPU) or `"smart"` (the GPU while
+  it is busy, for example while gaming, and the CPU otherwise).
+- Temperature on the digits and usage on the bar at the same time (`bar = "usage"`).
+- Turns the display off while the PC is locked or its screen is off (Windows), or every night.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a service: starts with the PC, no window needed.
-- Windows: optional tray icon that shows the temperature, and a settings window with a live preview
-  of the cooler display and the last two minutes of temperature and usage (translucent Acrylic glass
-  on Windows 11).
+- Windows: optional tray icon that shows the temperature, and a settings window in the style of the
+  Windows 11 settings, with a live preview of the cooler display and the last two minutes of
+  temperature and usage (translucent Acrylic glass on Windows 11).
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
 - Windows efficiency mode (EcoQoS): the service and the tray icon ask Windows for efficiency cores
   and clock speeds; the settings window runs normally while it is open.
@@ -250,7 +253,8 @@ by editing the file (as administrator or root); the service picks up changes imm
 | Key | Values | Default |
 |---|---|---|
 | `mode` | `temperature`, `usage`, `auto` (alternates), `power` (LS series), `custom` | `temperature` |
-| `source` | `cpu`, `gpu`, `auto` (alternates every `auto_interval_s`) | `cpu` |
+| `source` | `cpu`, `gpu`, `auto` (alternates every `auto_interval_s`), `smart` (GPU above 50 % usage, CPU below 30 %) | `cpu` |
+| `bar` | `value` (follows the number), `usage` (usage of the component shown) | `value` |
 | `unit` | `celsius`, `fahrenheit` | `celsius` |
 | `alarm` | `true`, `false` | `true` |
 | `alarm_threshold` | 40–110 (°C) | `90` |
@@ -259,6 +263,10 @@ by editing the file (as administrator or root); the service picks up changes imm
 | `custom_value` | 0–999, shown in `custom` mode | `0` |
 | `custom_symbol` | `celsius`, `fahrenheit`, `percent` | `celsius` |
 | `custom_bar` | 1–10 | `1` |
+| `off_when_locked` | `true`, `false` (Windows) | `false` |
+| `off_when_screen_off` | `true`, `false` (Windows) | `false` |
+| `off_at_night` | `true`, `false` | `false` |
+| `night_start`, `night_end` | `HH:MM`, local time | `23:00`, `07:00` |
 
 In `custom` mode the temperature alarm still blinks the display when the CPU gets hot. A display
 that cannot show the chosen value shows the temperature instead (for example, `power` on an AK
