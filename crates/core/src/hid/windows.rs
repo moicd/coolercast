@@ -29,8 +29,8 @@ use crate::win::{Event, Handle, from_wide, wide};
 /// How long a single output report may take before the write is cancelled.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(1000);
 
-/// Lists the present HID collections of a vendor.
-pub fn enumerate(vendor_id: u16) -> io::Result<Vec<DeviceInfo>> {
+/// Lists the present HID collections of the given vendors.
+pub fn enumerate(vendor_ids: &[u16]) -> io::Result<Vec<DeviceInfo>> {
     let mut guid: GUID = unsafe { mem::zeroed() };
     unsafe { HidD_GetHidGuid(&mut guid) };
 
@@ -56,7 +56,7 @@ pub fn enumerate(vendor_id: u16) -> io::Result<Vec<DeviceInfo>> {
         let Some(path) = interface_path(set, &iface) else {
             continue;
         };
-        if let Some(info) = query(&path).filter(|d| d.vendor_id == vendor_id) {
+        if let Some(info) = query(&path).filter(|d| vendor_ids.contains(&d.vendor_id)) {
             devices.push(info);
         }
     }

@@ -17,6 +17,9 @@ pub enum Mode {
     Auto,
     /// A fixed value chosen by the user (`custom_value`, `custom_symbol`, `custom_bar`).
     Custom,
+    /// CPU power in watts, on displays with a power symbol (LS series); the others show the
+    /// temperature.
+    Power,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,8 +137,9 @@ impl Config {
         format!(
             "# CoolerCast settings. Changes are picked up automatically.\n\
              \n\
-             # What the display shows: \"temperature\", \"usage\", \"auto\" (alternates both)\n\
-             # or \"custom\" (the custom_* values below).\n\
+             # What the display shows: \"temperature\", \"usage\", \"auto\" (alternates both),\n\
+             # \"power\" (LS series; other displays show the temperature) or \"custom\" (the\n\
+             # custom_* values below). Displays that show several values at once ignore it.\n\
              mode = \"{mode}\"\n\
              # Temperature unit: \"celsius\" or \"fahrenheit\".\n\
              unit = \"{unit}\"\n\
@@ -246,6 +250,7 @@ impl fmt::Display for Mode {
             Mode::Usage => "usage",
             Mode::Auto => "auto",
             Mode::Custom => "custom",
+            Mode::Power => "power",
         })
     }
 }
@@ -259,8 +264,9 @@ impl FromStr for Mode {
             "usage" => Ok(Mode::Usage),
             "auto" => Ok(Mode::Auto),
             "custom" => Ok(Mode::Custom),
+            "power" => Ok(Mode::Power),
             _ => Err(format!(
-                "unknown mode '{s}' (expected temperature, usage, auto or custom)"
+                "unknown mode '{s}' (expected temperature, usage, auto, power or custom)"
             )),
         }
     }
@@ -385,6 +391,8 @@ mod tests {
     #[test]
     fn set_validates_input() {
         let mut config = Config::default();
+        config.set("mode", "power").unwrap();
+        assert_eq!(config.mode, Mode::Power);
         config.set("mode", "usage").unwrap();
         config.set("unit", "f").unwrap();
         config.set("alarm", "off").unwrap();

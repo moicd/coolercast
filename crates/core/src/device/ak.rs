@@ -44,6 +44,8 @@ pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
             )
         }
         Reading::Usage { percent } => (MODE_USAGE, display_value(percent), bar_level(percent)),
+        // There is no power symbol; `Update::reading_for` sends the temperature instead.
+        Reading::Power { watts } => (MODE_USAGE, display_value(watts), bar_level(watts)),
         Reading::Custom { value, symbol, bar } => {
             let mode = match symbol {
                 Symbol::Celsius => MODE_CELSIUS,
@@ -53,17 +55,19 @@ pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
             (mode, value.min(999), bar.clamp(1, 10))
         }
     };
-    raw_packet(
-        report_id,
-        [
-            mode,
-            bar,
-            (value / 100) as u8,
-            (value / 10 % 10) as u8,
-            (value % 10) as u8,
-            alarm.into(),
-        ],
-    )
+    raw_packet(report_id, payload(mode, bar, value, alarm))
+}
+
+/// The six payload bytes: mode, bar, the three digits of `value` and the alarm flag.
+pub fn payload(mode: u8, bar: u8, value: u16, alarm: bool) -> [u8; PAYLOAD_LEN] {
+    [
+        mode,
+        bar,
+        (value / 100) as u8,
+        (value / 10 % 10) as u8,
+        (value % 10) as u8,
+        alarm.into(),
+    ]
 }
 
 /// A report with the given payload bytes, unvalidated.

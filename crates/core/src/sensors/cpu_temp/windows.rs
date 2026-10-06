@@ -5,13 +5,13 @@
 //! - AMD Zen (family 17h–1Ah): Tctl from the SMN register `THM_TCON_CUR_TMP`.
 
 use std::arch::x86_64::__cpuid;
+use std::io;
 use std::time::Duration;
-use std::{fs, io};
 
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
-use crate::paths;
-use crate::sensors::pawnio::PawnIo;
+use crate::sensors::pawnio::{PawnIo, read_msr};
+use crate::sensors::{Vendor, cpu_vendor};
 use crate::win::{Handle, wide};
 
 const MSR_IA32_THERM_STATUS: u64 = 0x19C;
@@ -22,26 +22,6 @@ const SMN_THM_TCON_CUR_TMP: u64 = 0x0005_9800;
 
 /// Mutex other monitoring tools use to serialize PCI configuration space access.
 const PCI_MUTEX_NAME: &str = r"Global\Access_PCI";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Vendor {
-    Intel,
-    Amd,
-    Other,
-}
-
-pub fn cpu_vendor() -> Vendor {
-    let leaf = __cpuid(0);
-    let mut id = [0u8; 12];
-    id[..4].copy_from_slice(&leaf.ebx.to_le_bytes());
-    id[4..8].copy_from_slice(&leaf.edx.to_le_bytes());
-    id[8..].copy_from_slice(&leaf.ecx.to_le_bytes());
-    match &id {
-        b"GenuineIntel" => Vendor::Intel,
-        b"AuthenticAMD" => Vendor::Amd,
-        _ => Vendor::Other,
-    }
-}
 
 /// Reads the CPU temperature in °C.
 pub struct CpuTemp {
@@ -64,7 +44,7 @@ impl CpuTemp {
     pub fn open() -> io::Result<Self> {
         let backend = match cpu_vendor() {
             Vendor::Intel => {
-                let pawn = PawnIo::load(&read_module("IntelMSR.bin")?)?;
+                let pawn = PawnIo::load_module("IntelMSR.bin")?;
                 let tjmax = intel_tjmax(read_msr(&pawn, MSR_IA32_TEMPERATURE_TARGET)?);
                 // CPUID.06H:EAX[6]: package thermal management.
                 let package = __cpuid(6).eax & (1 << 6) != 0;
@@ -76,7 +56,7 @@ impl CpuTemp {
                 Backend::Intel { pawn, tjmax, msr }
             }
             Vendor::Amd => {
-                let pawn = PawnIo::load(&read_module("AMDFamily17.bin")?)?;
+                let pawn = PawnIo::load_module("AMDFamily17.bin")?;
                 let name = wide(PCI_MUTEX_NAME);
                 let pci_mutex =
                     Handle::new(unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) }).ok();
@@ -121,22 +101,6 @@ impl CpuTemp {
             Backend::Amd { .. } => "AMD Tctl (SMN 0x59800)",
         }
     }
-}
-
-fn read_module(name: &str) -> io::Result<Vec<u8>> {
-    let path = paths::module_file(name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("PawnIO module {name} not found next to the executable"),
-        )
-    })?;
-    fs::read(path)
-}
-
-fn read_msr(pawn: &PawnIo, msr: u64) -> io::Result<u64> {
-    let mut out = [0u64; 1];
-    pawn.execute(c"ioctl_read_msr", &[msr], &mut out)?;
-    Ok(out[0])
 }
 
 /// TjMax from `IA32_TEMPERATURE_TARGET` bits 23:16 (100 °C if the CPU reports 0).
@@ -205,10 +169,5 @@ mod tests {
         // Same raw value with the range select bit: 45.5 - 49 = -3.5
         assert_eq!(amd_tctl((364 << 21) | (1 << 19)), -3.5);
         assert_eq!(amd_tctl((744 << 21) | (1 << 19)), 44.0);
-    }
-
-    #[test]
-    fn vendor_is_detected() {
-        assert_ne!(cpu_vendor(), Vendor::Other);
     }
 }

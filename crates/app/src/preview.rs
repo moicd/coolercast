@@ -1,8 +1,8 @@
-//! Simulated cooler display: three seven-segment digits, the unit symbols and the 10-step bar,
-//! lit the same way as the real one.
+//! Simulated AK series display: three seven-segment digits, the unit symbols and the 10-step
+//! bar, lit the same way as the real one.
 
 use coolercast_core::config::{Config, Symbol, Unit};
-use coolercast_core::device::ak;
+use coolercast_core::device::{self, Family, ak};
 use coolercast_core::ipc::{Shown, Status};
 
 use crate::gfx::{Align, Canvas, Color, Rect, Weight};
@@ -21,12 +21,22 @@ pub struct Frame {
     pub alarm: bool,
 }
 
+/// Whether the preview matches what the connected coolers show: with an AK series display, or
+/// before any cooler is connected.
+pub fn applies_to(devices: &[String]) -> bool {
+    devices.is_empty()
+        || devices
+            .iter()
+            .any(|name| device::model_named(name).is_some_and(|m| m.family == Family::AkSeries))
+}
+
 impl Frame {
     pub fn from_status(status: &Status) -> Option<Self> {
         let alarm = status.alarm_active;
         let (value, bar, symbol) = match (status.shown?, status.cpu_temp) {
             (Shown::Custom, _) => return Some(Self::custom(&status.config, alarm)),
-            (Shown::Temperature, Some(t)) => {
+            // AK displays have no power symbol and show the temperature instead.
+            (Shown::Temperature | Shown::Power, Some(t)) => {
                 let unit = status.config.unit;
                 let symbol = match unit {
                     Unit::Celsius => Symbol::Celsius,
@@ -231,6 +241,23 @@ mod tests {
         assert_eq!(f.digits, [None, None, Some(7)]);
         assert_eq!(f.symbol, Symbol::Percent);
         assert_eq!(f.bar, 9);
+    }
+
+    #[test]
+    fn power_mode_shows_the_temperature() {
+        let f = Frame::from_status(&status(Shown::Power, 47.6, 3.0)).unwrap();
+        assert_eq!(f.digits, [None, Some(4), Some(8)]);
+        assert_eq!(f.symbol, Symbol::Celsius);
+    }
+
+    #[test]
+    fn preview_only_for_ak_displays() {
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(applies_to(&[]));
+        assert!(applies_to(&names(&["AK400 DIGITAL"])));
+        assert!(applies_to(&names(&["LQ240/LQ360", "AK620 DIGITAL"])));
+        assert!(!applies_to(&names(&["AK620 DIGITAL PRO"])));
+        assert!(!applies_to(&names(&["LS520/LS720 SE DIGITAL"])));
     }
 
     #[test]

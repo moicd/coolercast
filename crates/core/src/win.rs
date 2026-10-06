@@ -1,16 +1,20 @@
 //! Small safe wrappers around the Win32 primitives used across the crate.
 
-use std::ffi::OsStr;
+use std::ffi::{CStr, OsStr};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, FreeLibrary, HANDLE, HMODULE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
@@ -85,6 +89,46 @@ impl Event {
     }
 }
 
+/// A DLL from System32 loaded at runtime, so it costs nothing until it is needed. Freed on drop.
+#[derive(Debug)]
+pub struct Library(HMODULE);
+
+impl Library {
+    pub fn system(name: &str) -> io::Result<Self> {
+        let module = unsafe {
+            LoadLibraryExW(
+                wide(name).as_ptr(),
+                ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        if module.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(module))
+        }
+    }
+
+    /// The address of an export as a function pointer.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be the function pointer type of the export, and must not be called after the
+    /// library is dropped.
+    pub unsafe fn symbol<T: Copy>(&self, name: &CStr) -> Option<T> {
+        let address = unsafe { GetProcAddress(self.0, name.as_ptr().cast()) }?;
+        Some(unsafe {
+            std::mem::transmute_copy::<unsafe extern "system" fn() -> isize, T>(&address)
+        })
+    }
+}
+
+impl Drop for Library {
+    fn drop(&mut self) {
+        unsafe { FreeLibrary(self.0) };
+    }
+}
+
 /// Waits until any of `events` is signaled and returns its index, or `None` on timeout.
 pub fn wait_any(events: &[&Event], timeout: Duration) -> Option<usize> {
     let handles: Vec<HANDLE> = events.iter().map(|e| e.raw()).collect();
@@ -128,6 +172,15 @@ mod tests {
         let w = wide("AK400");
         assert_eq!(w.last(), Some(&0));
         assert_eq!(from_wide(&w), "AK400");
+    }
+
+    #[test]
+    fn library_symbols() {
+        let kernel32 = Library::system("kernel32.dll").unwrap();
+        type GetTickCount = unsafe extern "system" fn() -> u32;
+        assert!(unsafe { kernel32.symbol::<GetTickCount>(c"GetTickCount") }.is_some());
+        assert!(unsafe { kernel32.symbol::<GetTickCount>(c"NoSuchExport") }.is_none());
+        assert!(Library::system("no-such-library.dll").is_err());
     }
 
     #[test]

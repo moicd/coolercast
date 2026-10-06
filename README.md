@@ -37,6 +37,8 @@ These links always point to the latest version. Older versions, release notes an
 ## Features
 
 - CPU temperature (°C or °F), CPU usage, both alternating, or a fixed number of your choice.
+- CPU power and frequency for the displays that show them (LS, LD, LQ and DIGITAL PRO models),
+  read only while such a display is connected.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a service: starts with the PC, no window needed.
 - Windows: optional tray icon that shows the temperature, and a settings window with a live preview
@@ -54,15 +56,33 @@ These links always point to the latest version. Older versions, release notes an
 | AK620 DIGITAL / DIGITAL SE | `3633:0002` | Same protocol, untested |
 | AK500 DIGITAL | `3633:0003` | Same protocol, untested |
 | AK500S DIGITAL / DIGITAL SE | `3633:0004` | Same protocol, untested |
+| LS520 SE / LS720 SE DIGITAL | `3633:0006` | Experimental, untested |
+| AG400 / AG620 DIGITAL | `3633:0008` | Experimental, untested |
+| LD240 / LD360 | `3633:000A` | Experimental, untested |
+| LQ240 / LQ360 | `3633:000D` | Experimental, untested |
+| ASSASSIN IV VC VISION | `3633:000F`, `3633:001F` | Experimental, untested |
+| AK400 DIGITAL PRO | `3633:0010` | Experimental, untested |
+| AK500 DIGITAL PRO | `3633:0011` | Experimental, untested |
+| AK620 DIGITAL PRO | `3633:0012` | Experimental, untested |
+| AK620 G2 / AK400 G2 / AK500 G2 DIGITAL NYX | `3633:0029`, `3633:002B`, `3633:002C` | Experimental, untested |
+| AK700 DIGITAL NYX | `3633:002A` | Experimental, untested |
+| CH510 MESH DIGITAL (case) | `34D3:1100` | Experimental, untested |
 
-Other DeepCool products use different protocols. Contributions are welcome; see
-[docs/protocol-ak-series.md](docs/protocol-ak-series.md) for how the AK series works.
+The experimental models are implemented from community protocol notes and have not been tried on
+real hardware yet. If you own one, `coolercast list` and `coolercast test` (see [Usage](#usage))
+tell quickly whether it works; please [report the result](https://github.com/moicd/coolercast/issues),
+good or bad. GPU values, the CH series and the LP pixel displays are not supported yet. See
+[docs/protocol-ak-series.md](docs/protocol-ak-series.md) and
+[docs/protocol-other-series.md](docs/protocol-other-series.md) for how the displays work.
 
 | Platform | CPU temperature from | Status |
 |---|---|---|
 | Windows, Intel | PawnIO, package thermal MSR | Tested |
 | Windows, AMD Ryzen | PawnIO, Tctl over SMN | Experimental |
 | Linux | kernel hwmon (`k10temp`, `coretemp`) | Installs in CI, untested on a cooler |
+
+The CPU power comes from the RAPL energy counter (PawnIO on Windows, powercap on Linux) and the
+frequency from the Windows performance counters or Linux cpufreq.
 
 ## Install on Windows
 
@@ -215,7 +235,7 @@ by editing the file (as administrator or root); the service picks up changes imm
 
 | Key | Values | Default |
 |---|---|---|
-| `mode` | `temperature`, `usage`, `auto` (alternates), `custom` | `temperature` |
+| `mode` | `temperature`, `usage`, `auto` (alternates), `power` (LS series), `custom` | `temperature` |
 | `unit` | `celsius`, `fahrenheit` | `celsius` |
 | `alarm` | `true`, `false` | `true` |
 | `alarm_threshold` | 40–110 (°C) | `90` |
@@ -225,11 +245,15 @@ by editing the file (as administrator or root); the service picks up changes imm
 | `custom_symbol` | `celsius`, `fahrenheit`, `percent` | `celsius` |
 | `custom_bar` | 1–10 | `1` |
 
-In `custom` mode the temperature alarm still blinks the display when the CPU gets hot.
+In `custom` mode the temperature alarm still blinks the display when the CPU gets hot. A display
+that cannot show the chosen value shows the temperature instead (for example, `power` on an AK
+cooler or `usage` on an LS one). Displays that show several values at once (LD, LQ, DIGITAL PRO,
+CH510) ignore `mode` and the `custom_*` settings.
 
 ### Exploring the display
 
-The AK series display has fixed segments: three digits, the °C/°F/% symbols and a 10-step bar.
+The AK series display has fixed segments: three digits, the °C/°F/% symbols and a 10-step bar
+(the LS series uses the same report layout, so `probe` works with both).
 Only digits 0–9 and the values in [the protocol notes](docs/protocol-ak-series.md) are known.
 `coolercast probe` sends other values one at a time so you can see whether the firmware hides
 letters or other symbols. Stop the service first, then run, for example:

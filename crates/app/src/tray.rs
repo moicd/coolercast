@@ -44,6 +44,7 @@ const ID_MODE_TEMPERATURE: usize = 100;
 const ID_MODE_USAGE: usize = 101;
 const ID_MODE_AUTO: usize = 102;
 const ID_MODE_CUSTOM: usize = 103;
+const ID_MODE_POWER: usize = 104;
 const ID_UNIT_CELSIUS: usize = 110;
 const ID_UNIT_FAHRENHEIT: usize = 111;
 const ID_ALARM: usize = 120;
@@ -334,6 +335,13 @@ fn show_menu(hwnd: HWND) {
         );
         item(
             modes,
+            ID_MODE_POWER,
+            "Power (LS series)",
+            online && config.mode == Mode::Power,
+            online,
+        );
+        item(
+            modes,
             ID_MODE_CUSTOM,
             "Custom value",
             online && config.mode == Mode::Custom,
@@ -387,6 +395,7 @@ fn show_menu(hwnd: HWND) {
         ID_MODE_USAGE => Some(("mode", "usage")),
         ID_MODE_AUTO => Some(("mode", "auto")),
         ID_MODE_CUSTOM => Some(("mode", "custom")),
+        ID_MODE_POWER => Some(("mode", "power")),
         ID_UNIT_CELSIUS => Some(("unit", "celsius")),
         ID_UNIT_FAHRENHEIT => Some(("unit", "fahrenheit")),
         ID_ALARM => Some(("alarm", if alarm { "off" } else { "on" })),

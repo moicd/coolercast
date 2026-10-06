@@ -5,12 +5,14 @@ Guidance for coding agents working on this repository.
 ## Project
 
 CoolerCast is a lightweight, native replacement for the official DeepCool app. It drives the
-display of DeepCool CPU coolers (AK series for now) with CPU temperature and usage. Windows and
-Linux, x86-64 only (the coolers are for desktop sockets).
+display of DeepCool CPU coolers (AK, AG, LS, LD, LQ and DIGITAL PRO series, plus the CH510 case)
+with CPU temperature, usage, power and frequency. Windows and Linux, x86-64 only (the coolers are
+for desktop sockets).
 
-- `crates/core` (`coolercast-core`): HID transport, device protocols, sensors, config, IPC, engine.
-  Platform code lives in `windows.rs` / `linux.rs` submodules (`hid`, `ipc`, `sensors::cpu_temp`)
-  or behind `#[cfg]`; everything else is shared.
+- `crates/core` (`coolercast-core`): HID transport, device protocols (`device/`, one module per
+  report format), sensors, config, IPC, engine.
+  Platform code lives in `windows.rs` / `linux.rs` submodules (`hid`, `ipc`, `sensors::cpu_temp`,
+  `cpu_power`, `cpu_freq`) or behind `#[cfg]`; everything else is shared.
 - `crates/cli` (`coolercast`): CLI on both platforms; the Windows service (LocalSystem) on Windows.
   On Linux, systemd runs `coolercast run`.
 - `crates/app` (`coolercast-app.exe`): Windows-only tray icon and settings window; talks to the

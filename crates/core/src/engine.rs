@@ -1,12 +1,15 @@
 //! The update loop: read sensors, build a report, send it to every cooler, sleep.
 
+use std::io;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::{Config, Mode};
-use crate::device::{self, Cooler, Reading};
+use crate::device::{self, Cooler, Reading, Readings, Update};
 use crate::ipc::{HISTORY_LEN, Sample, Shown, Status};
+use crate::sensors::cpu_freq::CpuFreq;
+use crate::sensors::cpu_power::CpuPower;
 use crate::sensors::cpu_temp::CpuTemp;
 use crate::sensors::cpu_usage::CpuUsage;
 use crate::{info, warn};
@@ -136,6 +139,8 @@ impl Engine {
             }
         };
         let mut temp_failing = false;
+        let mut power = OnDemand::new("CPU power");
+        let mut freq = OnDemand::new("CPU frequency");
 
         let mut coolers: Vec<Cooler> = Vec::new();
         let mut next_scan = Instant::now();
@@ -165,10 +170,30 @@ impl Engine {
                 }
             });
 
-            let reading = choose_reading(&config, cpu_temp, cpu_usage, started.elapsed());
+            let readings = Readings {
+                cpu_temp,
+                cpu_usage,
+                cpu_power: power.sample(
+                    coolers.iter().any(|c| c.family().uses_power()),
+                    CpuPower::open,
+                    CpuPower::read,
+                ),
+                cpu_freq: freq.sample(
+                    coolers.iter().any(|c| c.family().uses_frequency()),
+                    CpuFreq::open,
+                    |sensor| sensor.read().map(Some),
+                ),
+            };
+            let reading = choose_reading(&config, &readings, started.elapsed());
             let alarm =
                 config.alarm && cpu_temp.is_some_and(|t| t >= f32::from(config.alarm_threshold));
-            coolers.retain_mut(|cooler| match cooler.show(reading, alarm) {
+            let update = Update {
+                reading,
+                readings,
+                unit: config.unit,
+                alarm,
+            };
+            coolers.retain_mut(|cooler| match cooler.show(&update) {
                 Ok(()) => true,
                 Err(e) => {
                     warn!("{} disconnected: {e}", cooler.name());
@@ -182,9 +207,12 @@ impl Engine {
                 let status = &mut state.status;
                 status.cpu_temp = cpu_temp;
                 status.cpu_usage = Some(cpu_usage);
+                status.cpu_power = readings.cpu_power;
+                status.cpu_freq = readings.cpu_freq;
                 status.shown = Some(match reading {
                     Reading::Temperature { .. } => Shown::Temperature,
                     Reading::Usage { .. } => Shown::Usage,
+                    Reading::Power { .. } => Shown::Power,
                     Reading::Custom { .. } => Shown::Custom,
                 });
                 status.alarm_active = alarm;
@@ -226,6 +254,70 @@ impl Engine {
     }
 }
 
+/// A sensor opened the first time a connected display needs it. If it cannot be opened, it is
+/// not tried again until the service restarts.
+struct OnDemand<T> {
+    name: &'static str,
+    state: SensorState<T>,
+    failing: bool,
+}
+
+enum SensorState<T> {
+    Unopened,
+    Open(T),
+    Unavailable,
+}
+
+impl<T> OnDemand<T> {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            state: SensorState::Unopened,
+            failing: false,
+        }
+    }
+
+    /// Reads the sensor if `wanted`, opening it on first use. Errors are logged once.
+    fn sample(
+        &mut self,
+        wanted: bool,
+        open: impl FnOnce() -> io::Result<T>,
+        read: impl FnOnce(&mut T) -> io::Result<Option<f32>>,
+    ) -> Option<f32> {
+        if !wanted {
+            return None;
+        }
+        if let SensorState::Unopened = self.state {
+            self.state = match open() {
+                Ok(sensor) => {
+                    info!("{} sensor opened", self.name);
+                    SensorState::Open(sensor)
+                }
+                Err(e) => {
+                    warn!("{} unavailable: {e}", self.name);
+                    SensorState::Unavailable
+                }
+            };
+        }
+        let SensorState::Open(sensor) = &mut self.state else {
+            return None;
+        };
+        match read(sensor) {
+            Ok(value) => {
+                self.failing = false;
+                value
+            }
+            Err(e) => {
+                if !self.failing {
+                    warn!("{} read failed: {e}", self.name);
+                    self.failing = true;
+                }
+                None
+            }
+        }
+    }
+}
+
 fn modified(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -258,23 +350,26 @@ fn open_coolers() -> Vec<Cooler> {
     coolers
 }
 
-/// Picks what to show. Without a temperature sensor every mode falls back to usage.
-pub fn choose_reading(
-    config: &Config,
-    cpu_temp: Option<f32>,
-    cpu_usage: f32,
-    elapsed: Duration,
-) -> Reading {
-    let usage = Reading::Usage { percent: cpu_usage };
+/// Picks what single-value displays show. Without a power reading the power mode falls back to
+/// the temperature, and without a temperature sensor every mode falls back to usage.
+pub fn choose_reading(config: &Config, readings: &Readings, elapsed: Duration) -> Reading {
+    let usage = Reading::Usage {
+        percent: readings.cpu_usage,
+    };
     let temperature = |celsius| Reading::Temperature {
         celsius,
         unit: config.unit,
     };
-    match (config.mode, cpu_temp) {
+    match (config.mode, readings.cpu_temp) {
         (Mode::Custom, _) => Reading::Custom {
             value: config.custom_value,
             symbol: config.custom_symbol,
             bar: config.custom_bar,
+        },
+        (Mode::Power, temp) => match (readings.cpu_power, temp) {
+            (Some(watts), _) => Reading::Power { watts },
+            (None, Some(t)) => temperature(t),
+            (None, None) => usage,
         },
         (_, None) | (Mode::Usage, _) => usage,
         (Mode::Temperature, Some(t)) => temperature(t),
@@ -302,6 +397,60 @@ mod tests {
         }
     }
 
+    fn sensors(cpu_temp: Option<f32>, cpu_usage: f32) -> Readings {
+        Readings {
+            cpu_temp,
+            cpu_usage,
+            ..Readings::default()
+        }
+    }
+
+    #[test]
+    fn power_mode_falls_back_to_temperature() {
+        let at = Duration::ZERO;
+        let c = config(Mode::Power);
+        let with_power = Readings {
+            cpu_power: Some(65.0),
+            ..sensors(Some(50.0), 20.0)
+        };
+        assert_eq!(
+            choose_reading(&c, &with_power, at),
+            Reading::Power { watts: 65.0 }
+        );
+        assert_eq!(
+            choose_reading(&c, &sensors(Some(50.0), 20.0), at),
+            Reading::Temperature {
+                celsius: 50.0,
+                unit: Unit::Celsius
+            }
+        );
+        assert_eq!(
+            choose_reading(&c, &sensors(None, 20.0), at),
+            Reading::Usage { percent: 20.0 }
+        );
+    }
+
+    #[test]
+    fn sensors_open_on_demand_and_once() {
+        let mut opens = 0;
+        let mut sensor = OnDemand::<f32>::new("test");
+        let read = |v: &mut f32| Ok(Some(*v));
+        assert_eq!(sensor.sample(false, || unreachable!(), read), None);
+        for _ in 0..2 {
+            let open = || {
+                opens += 1;
+                Ok(1.5)
+            };
+            assert_eq!(sensor.sample(true, open, read), Some(1.5));
+        }
+        assert_eq!(opens, 1);
+
+        let mut broken = OnDemand::<f32>::new("broken");
+        let fail = || Err(io::Error::other("no driver"));
+        assert_eq!(broken.sample(true, fail, read), None);
+        assert_eq!(broken.sample(true, || unreachable!(), read), None);
+    }
+
     #[test]
     fn modes() {
         let at = Duration::ZERO;
@@ -311,15 +460,15 @@ mod tests {
         };
         let usage = Reading::Usage { percent: 20.0 };
         assert_eq!(
-            choose_reading(&config(Mode::Temperature), Some(50.0), 20.0, at),
+            choose_reading(&config(Mode::Temperature), &sensors(Some(50.0), 20.0), at),
             temp
         );
         assert_eq!(
-            choose_reading(&config(Mode::Usage), Some(50.0), 20.0, at),
+            choose_reading(&config(Mode::Usage), &sensors(Some(50.0), 20.0), at),
             usage
         );
         assert_eq!(
-            choose_reading(&config(Mode::Temperature), None, 20.0, at),
+            choose_reading(&config(Mode::Temperature), &sensors(None, 20.0), at),
             usage
         );
     }
@@ -327,13 +476,13 @@ mod tests {
     #[test]
     fn auto_alternates() {
         let c = config(Mode::Auto);
-        let show = |secs| choose_reading(&c, Some(50.0), 20.0, Duration::from_secs(secs));
+        let show = |secs| choose_reading(&c, &sensors(Some(50.0), 20.0), Duration::from_secs(secs));
         assert!(matches!(show(0), Reading::Temperature { .. }));
         assert!(matches!(show(4), Reading::Temperature { .. }));
         assert!(matches!(show(5), Reading::Usage { .. }));
         assert!(matches!(show(10), Reading::Temperature { .. }));
         assert!(matches!(
-            choose_reading(&c, None, 20.0, Duration::ZERO),
+            choose_reading(&c, &sensors(None, 20.0), Duration::ZERO),
             Reading::Usage { .. }
         ));
     }
@@ -352,10 +501,13 @@ mod tests {
             bar: 3,
         };
         assert_eq!(
-            choose_reading(&c, Some(50.0), 20.0, Duration::ZERO),
+            choose_reading(&c, &sensors(Some(50.0), 20.0), Duration::ZERO),
             expected
         );
-        assert_eq!(choose_reading(&c, None, 20.0, Duration::ZERO), expected);
+        assert_eq!(
+            choose_reading(&c, &sensors(None, 20.0), Duration::ZERO),
+            expected
+        );
     }
 
     #[test]
