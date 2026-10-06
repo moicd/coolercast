@@ -1,6 +1,7 @@
 # AK series display protocol
 
 Applies to the DeepCool coolers with the small two-segment display (numeric value + 10-step bar):
+the bar runs across the top of the display, above the three digits and the unit symbols.
 
 | PID | Model |
 |---|---|
