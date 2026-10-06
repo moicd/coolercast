@@ -122,6 +122,7 @@ pub fn main() {
                 icon_key: (String::new(), icon::OFFLINE),
             })
         });
+        set_interactive(false);
         refresh(true);
         if !tray_only {
             window::open();
@@ -264,10 +265,18 @@ fn tooltip(status: Option<&Status>) -> String {
     format!("CoolerCast\nCPU {temp} · {usage}\n{devices}")
 }
 
+/// While only the tray icon is alive the app is background work: EcoQoS (efficiency cores and
+/// clocks). While the user interacts with the window or the menu, Windows picks the QoS itself.
+/// Errors are ignored: Windows versions without EcoQoS just run the app normally.
+pub fn set_interactive(interactive: bool) {
+    let _ = coolercast_core::win::set_efficiency_mode(!interactive);
+}
+
 fn show_menu(hwnd: HWND) {
     // Copy what the menu needs: TrackPopupMenu runs a modal loop that re-enters window_proc.
     let status = APP.with(|app| app.borrow().as_ref().and_then(|a| a.status.clone()));
     let autostart = autostart::enabled();
+    set_interactive(true);
 
     let command = unsafe {
         let menu = CreatePopupMenu();
@@ -388,6 +397,7 @@ fn show_menu(hwnd: HWND) {
         DestroyMenu(menu); // also destroys the submenus
         command as usize
     };
+    set_interactive(window::is_open());
 
     let alarm = status.as_ref().is_some_and(|s| s.config.alarm);
     let setting = match command {

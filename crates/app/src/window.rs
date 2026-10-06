@@ -536,6 +536,7 @@ pub fn open() {
     };
     style_title_bar(hwnd, &state.theme);
     SETTINGS.with(|s| *s.borrow_mut() = Some(state));
+    crate::tray::set_interactive(true);
     unsafe {
         ShowWindow(hwnd, SW_SHOWNORMAL);
         SetForegroundWindow(hwnd);
@@ -781,6 +782,7 @@ unsafe extern "system" fn window_proc(
                     run(Effect::Send(changes));
                 }
             }
+            crate::tray::set_interactive(false);
         }
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
