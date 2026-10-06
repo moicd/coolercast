@@ -12,7 +12,8 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 use std::{mem, ptr, thread};
 
-use coolercast_core::config::{self, Config, Mode, Symbol, Unit};
+use coolercast_core::config::{self, Config, Mode, Source, Symbol, Unit};
+use coolercast_core::device::Component;
 use coolercast_core::ipc::{HISTORY_LEN, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -62,7 +63,7 @@ const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
 // Layout, in device-independent pixels: a status column on the left, settings on the right.
 const WIDTH: f32 = 800.0;
-const HEIGHT: f32 = 610.0;
+const HEIGHT: f32 = 654.0;
 const PAD: f32 = 20.0;
 const GAP: f32 = 16.0;
 const LEFT_W: f32 = 340.0;
@@ -89,6 +90,7 @@ enum Control {
     Autostart,
     Update,
     Mode,
+    Source,
     AutoInterval,
     Unit,
     Interval,
@@ -99,10 +101,11 @@ enum Control {
     Threshold,
 }
 
-const CONTROLS: [Control; 11] = [
+const CONTROLS: [Control; 12] = [
     Control::Autostart,
     Control::Update,
     Control::Mode,
+    Control::Source,
     Control::AutoInterval,
     Control::Unit,
     Control::Interval,
@@ -135,7 +138,7 @@ impl Control {
         match self {
             Control::Autostart | Control::Update => true,
             _ if !online => false,
-            Control::AutoInterval => config.mode == Mode::Auto,
+            Control::AutoInterval => config.mode == Mode::Auto || config.source == Source::Auto,
             Control::CustomValue | Control::CustomSymbol | Control::CustomBar => {
                 config.mode == Mode::Custom
             }
@@ -147,6 +150,7 @@ impl Control {
     fn segments(self) -> &'static [&'static str] {
         match self {
             Control::Mode => &["Temperature", "Usage", "Alternate", "Custom"],
+            Control::Source => &["CPU", "GPU", "Alternate"],
             Control::Unit => &["°C", "°F"],
             Control::CustomSymbol => &["°C", "°F", "%"],
             _ => &[],
@@ -163,6 +167,11 @@ impl Control {
                 // No segment (it would not fit): the power mode, for LS displays, is chosen
                 // from the tray menu or the CLI.
                 Mode::Power => 4,
+            },
+            Control::Source => match config.source {
+                Source::Cpu => 0,
+                Source::Gpu => 1,
+                Source::Auto => 2,
             },
             Control::CustomSymbol => match config.custom_symbol {
                 Symbol::Celsius => 0,
@@ -183,6 +192,9 @@ impl Control {
             Control::Mode => {
                 const MODES: [Mode; 4] = [Mode::Temperature, Mode::Usage, Mode::Auto, Mode::Custom];
                 config.mode = MODES[index.min(3)];
+            }
+            Control::Source => {
+                config.source = [Source::Cpu, Source::Gpu, Source::Auto][index.min(2)]
             }
             Control::Unit => config.unit = [Unit::Celsius, Unit::Fahrenheit][index.min(1)],
             Control::CustomSymbol => {
@@ -246,6 +258,7 @@ impl Control {
     fn setting(self, config: &Config) -> Option<(&'static str, String)> {
         Some(match self {
             Control::Mode => ("mode", config.mode.to_string()),
+            Control::Source => ("source", config.source.to_string()),
             Control::AutoInterval => ("auto_interval_s", config.auto_interval_s.to_string()),
             Control::Unit => ("unit", config.unit.to_string()),
             Control::Interval => ("interval_ms", config.interval_ms.to_string()),
@@ -995,7 +1008,7 @@ impl Settings {
         };
         self.typing = false;
         match control {
-            Control::Mode | Control::Unit | Control::CustomSymbol => {
+            Control::Mode | Control::Source | Control::Unit | Control::CustomSymbol => {
                 let count = control.segments().len();
                 let current = control.selected_segment(&self.config);
                 let index = if forward {
@@ -1180,6 +1193,7 @@ impl Settings {
                 "Display",
                 &[
                     (Control::Mode, "Show"),
+                    (Control::Source, "Device"),
                     (Control::AutoInterval, "Switch every"),
                     (Control::Unit, "Unit"),
                     (Control::Interval, "Refresh every"),
@@ -1268,31 +1282,54 @@ impl Settings {
         }
 
         let unit = self.config.unit;
-        let temp = status
-            .and_then(|s| s.cpu_temp)
-            .map_or("--".into(), |v| format_temp(v, unit));
-        let usage = status
-            .and_then(|s| s.cpu_usage)
-            .map_or("--".into(), |u| format!("{u:.0} %"));
-        let power = status
-            .and_then(|s| s.cpu_power)
-            .map_or("--".into(), |w| format!("{w:.0} W"));
-        let freq = status
-            .and_then(|s| s.cpu_freq)
-            .map_or("--".into(), |f| format!("{f:.0} MHz"));
+        let text = |value: Option<f32>, format: &dyn Fn(f32) -> String| {
+            value.map_or_else(|| "--".to_owned(), format)
+        };
+        let temp = |value| text(value, &|v| format_temp(v, unit));
+        let percent = |value| text(value, &|u| format!("{u:.0} %"));
         let alarm = status.is_some_and(|s| s.alarm_active);
-        let mut values = vec![
+        let temp_color = if alarm { t.alarm } else { t.text };
+        let cpu = [
             (
                 "CPU temperature",
-                temp,
-                if alarm { t.alarm } else { t.text },
+                temp(status.and_then(|s| s.cpu_temp)),
+                temp_color,
             ),
-            ("CPU usage", usage, t.text),
+            (
+                "CPU usage",
+                percent(status.and_then(|s| s.cpu_usage)),
+                t.text,
+            ),
         ];
-        if !preview {
-            values.push(("CPU power", power, t.text));
-            values.push(("CPU frequency", freq, t.text));
-        }
+        let gpu = status.filter(|s| s.gpu_name.is_some()).map(|s| {
+            [
+                ("GPU temperature", temp(s.gpu.temp), t.text),
+                ("GPU usage", percent(s.gpu.usage), t.text),
+            ]
+        });
+        let showing_gpu = status.is_some_and(|s| s.component == Some(Component::Gpu));
+        let values: Vec<_> = match (preview, gpu) {
+            // Next to the preview: the component it shows.
+            (true, Some(gpu)) if showing_gpu => gpu.to_vec(),
+            (true, _) => cpu.to_vec(),
+            // Without the preview: both components, or the CPU power and clock.
+            (false, Some(gpu)) => cpu.into_iter().chain(gpu).collect(),
+            (false, None) => cpu
+                .into_iter()
+                .chain([
+                    (
+                        "CPU power",
+                        text(status.and_then(|s| s.cpu_power), &|w| format!("{w:.0} W")),
+                        t.text,
+                    ),
+                    (
+                        "CPU frequency",
+                        text(status.and_then(|s| s.cpu_freq), &|f| format!("{f:.0} MHz")),
+                        t.text,
+                    ),
+                ])
+                .collect(),
+        };
         // One column next to the preview, or two columns across the card.
         let (x0, columns) = if preview {
             (card.x + 216.0, 1)
@@ -1471,7 +1508,7 @@ impl Settings {
         let cy = row.y + row.h / 2.0;
         let focused = self.focus_visible && self.focus == Some(control);
         let area = match control {
-            Control::Mode | Control::Unit | Control::CustomSymbol => {
+            Control::Mode | Control::Source | Control::Unit | Control::CustomSymbol => {
                 self.draw_segmented(c, control, right, cy, enabled)
             }
             Control::Alarm => self.draw_switch(c, control, self.config.alarm, right, cy, enabled),
@@ -1825,6 +1862,10 @@ mod tests {
         );
         assert_eq!(
             next_focus(Some(Control::Mode), true, enabled),
+            Some(Control::Source)
+        );
+        assert_eq!(
+            next_focus(Some(Control::Source), true, enabled),
             Some(Control::Unit)
         );
         assert_eq!(

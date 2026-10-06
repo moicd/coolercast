@@ -1,14 +1,15 @@
-//! Framed status reports of the LD series, the AK DIGITAL PRO models and the LQ family (LQ240/
-//! LQ360, ASSASSIN IV VC VISION, AK G2 and AK700 DIGITAL NYX).
+//! Framed status reports of the LD series, the AK DIGITAL PRO models, the LQ family (LQ240/
+//! LQ360, ASSASSIN IV VC VISION, AK G2 and AK700 DIGITAL NYX) and the CH series 2nd generation.
 //!
 //! Each report is `[report id, header..., power, unit, temperature, usage, (frequency),
 //! checksum, 22, 0...]`, 64 bytes, with multi-byte values in big-endian order. These displays
 //! show every value at once, so the configured mode does not apply.
 //! See `docs/protocol-other-series.md`.
 
-use super::Readings;
 use super::ak::{PACKET_LEN, Packet};
+use super::{Component, Readings};
 use crate::config::Unit;
+use crate::sensors::Values;
 
 /// Last byte of every frame.
 const TERMINATOR: u8 = 22;
@@ -44,31 +45,75 @@ pub const LQ: Layout = Layout {
 /// The values of a report, already converted to what the display expects.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Telemetry {
-    /// CPU package power in watts.
+    /// Power in watts.
     pub power: u16,
     pub unit: Unit,
-    /// CPU temperature in `unit`, rounded to whole degrees.
+    /// Temperature in `unit`, rounded to whole degrees.
     pub temperature: f32,
-    /// CPU usage in percent.
+    /// Usage in percent.
     pub usage: u8,
-    /// CPU frequency in MHz.
+    /// Clock in MHz.
     pub frequency: u16,
 }
 
 impl Telemetry {
-    /// Missing sensors are sent as 0.
+    /// The CPU values. Missing sensors are sent as 0.
     pub fn new(readings: &Readings, unit: Unit) -> Self {
+        Self::from_values(&readings.of(Component::Cpu), unit)
+    }
+
+    /// The values of any component. Missing sensors are sent as 0.
+    pub fn from_values(values: &Values, unit: Unit) -> Self {
         // `as` saturates and maps NaN to 0.
         let whole = |value: f32| value.round() as u16;
         Self {
-            power: readings.cpu_power.map_or(0, whole),
+            power: values.power.map_or(0, whole),
             unit,
-            temperature: readings
-                .cpu_temp
+            temperature: values
+                .temp
                 .map_or(0.0, |celsius| unit.from_celsius(celsius).round()),
-            usage: readings.cpu_usage.round().clamp(0.0, 100.0) as u8,
-            frequency: readings.cpu_freq.map_or(0, whole),
+            usage: values
+                .usage
+                .map_or(0, |u| u.round().clamp(0.0, 100.0) as u8),
+            frequency: values.freq.map_or(0, whole),
         }
+    }
+}
+
+/// Header of the CH series 2nd generation report.
+const CH_GEN2_HEADER: [u8; 5] = [104, 1, 6, 35, 1];
+
+/// A CH series 2nd generation report (CH170, CH270 and CH690 DIGITAL cases). The page byte
+/// picks what the display shows: the CPU with its clock (`2`) or the GPU with its clock (`4`).
+/// The CPU fan speed and the PSU values are not measured and sent as 0. Fixed length: the
+/// checksum is always D40.
+pub fn ch_gen2_packet(report_id: u8, page: Component, cpu: &Telemetry, gpu: &Telemetry) -> Packet {
+    let mut frame = Frame::new(report_id);
+    frame.put(&CH_GEN2_HEADER);
+    frame.put(&[match page {
+        Component::Cpu => 2,
+        Component::Gpu => 4,
+    }]);
+    frame.put(&cpu.power.to_be_bytes());
+    frame.put(&[unit_byte(cpu.unit)]);
+    frame.put(&cpu.temperature.to_be_bytes());
+    frame.put(&[cpu.usage]);
+    frame.put(&cpu.frequency.to_be_bytes());
+    // CPU fan speed (u16).
+    frame.put(&[0; 2]);
+    frame.put(&gpu.power.to_be_bytes());
+    frame.put(&gpu.temperature.to_be_bytes());
+    frame.put(&[gpu.usage]);
+    frame.put(&gpu.frequency.to_be_bytes());
+    // PSU power, temperature, usage, power and fan speed, then the unused D39.
+    frame.put(&[0; 12]);
+    frame.close()
+}
+
+fn unit_byte(unit: Unit) -> u8 {
+    match unit {
+        Unit::Celsius => 0,
+        Unit::Fahrenheit => 1,
     }
 }
 
@@ -76,10 +121,7 @@ pub fn packet(report_id: u8, layout: &Layout, t: &Telemetry) -> Packet {
     let mut frame = Frame::new(report_id);
     frame.put(layout.header);
     frame.put(&t.power.to_be_bytes());
-    frame.put(&[match t.unit {
-        Unit::Celsius => 0,
-        Unit::Fahrenheit => 1,
-    }]);
+    frame.put(&[unit_byte(t.unit)]);
     frame.put(&t.temperature.to_be_bytes());
     frame.put(&[t.usage]);
     if layout.frequency {
@@ -212,6 +254,7 @@ mod tests {
             cpu_usage: 0.0,
             cpu_power: None,
             cpu_freq: None,
+            ..Readings::default()
         };
         let t = Telemetry::new(&readings, Unit::Fahrenheit);
         // 41 °C = 105.8 °F → 106.0 = 0x42D40000.
@@ -226,6 +269,7 @@ mod tests {
             cpu_usage: 99.7,
             cpu_power: Some(87.5),
             cpu_freq: Some(4699.6),
+            ..Readings::default()
         };
         assert_eq!(
             Telemetry::new(&readings, Unit::Celsius),
@@ -242,12 +286,43 @@ mod tests {
             cpu_usage: f32::NAN,
             cpu_power: Some(-3.0),
             cpu_freq: Some(1e9),
+            ..Readings::default()
         };
         let t = Telemetry::new(&odd, Unit::Celsius);
         assert_eq!(
             (t.power, t.temperature, t.usage, t.frequency),
             (0, 0.0, 0, u16::MAX)
         );
+    }
+
+    #[test]
+    fn ch_gen2_gpu_page() {
+        let gpu = Telemetry {
+            power: 180,
+            unit: Unit::Celsius,
+            temperature: 70.0,
+            usage: 90,
+            frequency: 2500,
+        };
+        let p = ch_gen2_packet(REPORT_ID, Component::Gpu, &T, &gpu);
+        // 147 + 4 + 245 + 106 + 37 + 120 + 180 + 206 + 90 + 205 = 1340 → 60.
+        let mut expected = vec![
+            16, 104, 1, 6, 35, 1, 4, 1, 244, 0, 66, 40, 0, 0, 37, 16, 104, 0, 0, 0, 180, 66, 140,
+            0, 0, 90, 9, 196,
+        ];
+        expected.extend([0; 12]);
+        expected.extend([60, 22]);
+        assert_eq!(expected.len(), 42, "checksum at D40, terminator at D41");
+        assert_frame(&p, &expected);
+    }
+
+    #[test]
+    fn ch_gen2_cpu_page_and_missing_gpu() {
+        let gpu = Telemetry::from_values(&Values::default(), Unit::Celsius);
+        let p = ch_gen2_packet(REPORT_ID, Component::Cpu, &T, &gpu);
+        assert_eq!(p[6], 2);
+        assert_eq!(p[19..28], [0; 9]);
+        assert_eq!(p[41], 22);
     }
 
     #[test]

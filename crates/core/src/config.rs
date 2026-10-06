@@ -57,10 +57,23 @@ pub enum Symbol {
     Percent,
 }
 
+/// Which component the display shows. Displays with a CPU and a GPU section (CH series) show
+/// both, and displays made for the CPU only (LD, LQ, DIGITAL PRO) ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    #[default]
+    Cpu,
+    Gpu,
+    /// Alternates between the CPU and the GPU.
+    Auto,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub mode: Mode,
+    pub source: Source,
     pub unit: Unit,
     /// Blink the display when the CPU reaches `alarm_threshold`.
     pub alarm: bool,
@@ -82,6 +95,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             mode: Mode::Temperature,
+            source: Source::Cpu,
             unit: Unit::Celsius,
             alarm: true,
             alarm_threshold: 90,
@@ -141,6 +155,9 @@ impl Config {
              # \"power\" (LS series; other displays show the temperature) or \"custom\" (the\n\
              # custom_* values below). Displays that show several values at once ignore it.\n\
              mode = \"{mode}\"\n\
+             # Component shown: \"cpu\", \"gpu\" or \"auto\" (alternates both every\n\
+             # auto_interval_s). CH series cases always show both.\n\
+             source = \"{source}\"\n\
              # Temperature unit: \"celsius\" or \"fahrenheit\".\n\
              unit = \"{unit}\"\n\
              # Blink the display when the CPU reaches alarm_threshold (°C, {a_min}-{a_max}).\n\
@@ -157,6 +174,7 @@ impl Config {
              custom_symbol = \"{custom_symbol}\"\n\
              custom_bar = {custom_bar}\n",
             mode = self.mode,
+            source = self.source,
             unit = self.unit,
             alarm = self.alarm,
             threshold = self.alarm_threshold,
@@ -195,6 +213,7 @@ impl Config {
 
         match key {
             "mode" => self.mode = value.parse()?,
+            "source" => self.source = value.parse()?,
             "unit" => self.unit = value.parse()?,
             "alarm" => {
                 self.alarm = match value {
@@ -215,9 +234,10 @@ impl Config {
     }
 
     /// `(key, value)` pairs in the same text form accepted by [`Config::set`].
-    pub fn entries(&self) -> [(&'static str, String); 9] {
+    pub fn entries(&self) -> [(&'static str, String); 10] {
         [
             ("mode", self.mode.to_string()),
+            ("source", self.source.to_string()),
             ("unit", self.unit.to_string()),
             ("alarm", self.alarm.to_string()),
             ("alarm_threshold", self.alarm_threshold.to_string()),
@@ -268,6 +288,29 @@ impl FromStr for Mode {
             _ => Err(format!(
                 "unknown mode '{s}' (expected temperature, usage, auto, power or custom)"
             )),
+        }
+    }
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Source::Cpu => "cpu",
+            Source::Gpu => "gpu",
+            Source::Auto => "auto",
+        })
+    }
+}
+
+impl FromStr for Source {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "cpu" => Ok(Source::Cpu),
+            "gpu" => Ok(Source::Gpu),
+            "auto" => Ok(Source::Auto),
+            _ => Err(format!("unknown source '{s}' (expected cpu, gpu or auto)")),
         }
     }
 }
@@ -328,6 +371,7 @@ mod tests {
     fn written_file_parses_back() {
         let config = Config {
             mode: Mode::Auto,
+            source: Source::Gpu,
             unit: Unit::Fahrenheit,
             alarm: false,
             alarm_threshold: 85,
@@ -393,6 +437,9 @@ mod tests {
         let mut config = Config::default();
         config.set("mode", "power").unwrap();
         assert_eq!(config.mode, Mode::Power);
+        config.set("source", "auto").unwrap();
+        assert_eq!(config.source, Source::Auto);
+        assert!(config.set("source", "psu").is_err());
         config.set("mode", "usage").unwrap();
         config.set("unit", "f").unwrap();
         config.set("alarm", "off").unwrap();
@@ -412,6 +459,7 @@ mod tests {
     fn entries_round_trip_through_set() {
         let source = Config {
             mode: Mode::Auto,
+            source: Source::Gpu,
             alarm_threshold: 70,
             ..Config::default()
         };

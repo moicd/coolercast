@@ -5,13 +5,15 @@ use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::config::{Config, Mode};
-use crate::device::{self, Cooler, Reading, Readings, Update};
+use crate::config::{Config, Mode, Source};
+use crate::device::{self, Component, Cooler, Reading, Readings, Update};
 use crate::ipc::{HISTORY_LEN, Sample, Shown, Status};
+use crate::sensors::Values;
 use crate::sensors::cpu_freq::CpuFreq;
 use crate::sensors::cpu_power::CpuPower;
 use crate::sensors::cpu_temp::CpuTemp;
 use crate::sensors::cpu_usage::CpuUsage;
+use crate::sensors::gpu::Gpu;
 use crate::{info, warn};
 
 /// How often to look for coolers while none is connected.
@@ -139,8 +141,9 @@ impl Engine {
             }
         };
         let mut temp_failing = false;
-        let mut power = OnDemand::new("CPU power");
-        let mut freq = OnDemand::new("CPU frequency");
+        let mut power = OnDemand::new("CPU power", |p: &CpuPower| p.source().to_owned());
+        let mut freq = OnDemand::new("CPU frequency", |f: &CpuFreq| f.source().to_owned());
+        let mut gpu = OnDemand::new("GPU", |g: &Gpu| format!("{} ({})", g.name(), g.source()));
 
         let mut coolers: Vec<Cooler> = Vec::new();
         let mut next_scan = Instant::now();
@@ -183,12 +186,22 @@ impl Engine {
                     CpuFreq::open,
                     |sensor| sensor.read().map(Some),
                 ),
+                gpu: gpu
+                    .sample(
+                        coolers.iter().any(|c| c.family().uses_gpu(config.source)),
+                        Gpu::open,
+                        |sensor| sensor.read().map(Some),
+                    )
+                    .unwrap_or_default(),
             };
-            let reading = choose_reading(&config, &readings, started.elapsed());
+            let gpu_available = readings.gpu.temp.is_some() || readings.gpu.usage.is_some();
+            let component = choose_component(&config, gpu_available, started.elapsed());
+            let reading = choose_reading(&config, &readings.of(component), started.elapsed());
             let alarm =
                 config.alarm && cpu_temp.is_some_and(|t| t >= f32::from(config.alarm_threshold));
             let update = Update {
                 reading,
+                component,
                 readings,
                 unit: config.unit,
                 alarm,
@@ -209,6 +222,12 @@ impl Engine {
                 status.cpu_usage = Some(cpu_usage);
                 status.cpu_power = readings.cpu_power;
                 status.cpu_freq = readings.cpu_freq;
+                status.gpu = readings.gpu;
+                let gpu_name = gpu.get().map(Gpu::name);
+                if status.gpu_name.as_deref() != gpu_name {
+                    status.gpu_name = gpu_name.map(ToOwned::to_owned);
+                }
+                status.component = Some(component);
                 status.shown = Some(match reading {
                     Reading::Temperature { .. } => Shown::Temperature,
                     Reading::Usage { .. } => Shown::Usage,
@@ -258,6 +277,8 @@ impl Engine {
 /// not tried again until the service restarts.
 struct OnDemand<T> {
     name: &'static str,
+    /// What the log says about the sensor once it is open.
+    describe: fn(&T) -> String,
     state: SensorState<T>,
     failing: bool,
 }
@@ -269,28 +290,37 @@ enum SensorState<T> {
 }
 
 impl<T> OnDemand<T> {
-    fn new(name: &'static str) -> Self {
+    fn new(name: &'static str, describe: fn(&T) -> String) -> Self {
         Self {
             name,
+            describe,
             state: SensorState::Unopened,
             failing: false,
         }
     }
 
+    /// The sensor, if it is open.
+    fn get(&self) -> Option<&T> {
+        match &self.state {
+            SensorState::Open(sensor) => Some(sensor),
+            _ => None,
+        }
+    }
+
     /// Reads the sensor if `wanted`, opening it on first use. Errors are logged once.
-    fn sample(
+    fn sample<V>(
         &mut self,
         wanted: bool,
         open: impl FnOnce() -> io::Result<T>,
-        read: impl FnOnce(&mut T) -> io::Result<Option<f32>>,
-    ) -> Option<f32> {
+        read: impl FnOnce(&mut T) -> io::Result<Option<V>>,
+    ) -> Option<V> {
         if !wanted {
             return None;
         }
         if let SensorState::Unopened = self.state {
             self.state = match open() {
                 Ok(sensor) => {
-                    info!("{} sensor opened", self.name);
+                    info!("{}: {}", self.name, (self.describe)(&sensor));
                     SensorState::Open(sensor)
                 }
                 Err(e) => {
@@ -350,38 +380,58 @@ fn open_coolers() -> Vec<Cooler> {
     coolers
 }
 
-/// Picks what single-value displays show. Without a power reading the power mode falls back to
-/// the temperature, and without a temperature sensor every mode falls back to usage.
-pub fn choose_reading(config: &Config, readings: &Readings, elapsed: Duration) -> Reading {
-    let usage = Reading::Usage {
-        percent: readings.cpu_usage,
-    };
-    let temperature = |celsius| Reading::Temperature {
-        celsius,
-        unit: config.unit,
-    };
-    match (config.mode, readings.cpu_temp) {
-        (Mode::Custom, _) => Reading::Custom {
-            value: config.custom_value,
-            symbol: config.custom_symbol,
-            bar: config.custom_bar,
-        },
-        (Mode::Power, temp) => match (readings.cpu_power, temp) {
-            (Some(watts), _) => Reading::Power { watts },
-            (None, Some(t)) => temperature(t),
-            (None, None) => usage,
-        },
-        (_, None) | (Mode::Usage, _) => usage,
-        (Mode::Temperature, Some(t)) => temperature(t),
-        (Mode::Auto, Some(t)) => {
-            let phase = elapsed.as_secs() / u64::from(config.auto_interval_s.max(1));
-            if phase.is_multiple_of(2) {
-                temperature(t)
+/// The component single-value displays show now. Without GPU readings it is always the CPU.
+pub fn choose_component(config: &Config, gpu_available: bool, elapsed: Duration) -> Component {
+    match config.source {
+        Source::Cpu => Component::Cpu,
+        _ if !gpu_available => Component::Cpu,
+        Source::Gpu => Component::Gpu,
+        Source::Auto => {
+            let phase = auto_phase(config, elapsed);
+            // When the mode alternates too, each component shows both of its values in turn.
+            let phase = if config.mode == Mode::Auto {
+                phase / 2
             } else {
-                usage
+                phase
+            };
+            if phase.is_multiple_of(2) {
+                Component::Cpu
+            } else {
+                Component::Gpu
             }
         }
     }
+}
+
+/// Picks what single-value displays show from one component's values. A missing value falls
+/// back to the temperature, then to the usage.
+pub fn choose_reading(config: &Config, values: &Values, elapsed: Duration) -> Reading {
+    let temperature = values.temp.map(|celsius| Reading::Temperature {
+        celsius,
+        unit: config.unit,
+    });
+    let usage = values.usage.map(|percent| Reading::Usage { percent });
+    let power = values.power.map(|watts| Reading::Power { watts });
+    let reading = match config.mode {
+        Mode::Custom => {
+            return Reading::Custom {
+                value: config.custom_value,
+                symbol: config.custom_symbol,
+                bar: config.custom_bar,
+            };
+        }
+        Mode::Temperature => temperature.or(usage),
+        Mode::Usage => usage.or(temperature),
+        Mode::Power => power.or(temperature).or(usage),
+        Mode::Auto if auto_phase(config, elapsed).is_multiple_of(2) => temperature.or(usage),
+        Mode::Auto => usage.or(temperature),
+    };
+    reading.unwrap_or(Reading::Usage { percent: 0.0 })
+}
+
+/// How many `auto_interval_s` periods have passed.
+fn auto_phase(config: &Config, elapsed: Duration) -> u64 {
+    elapsed.as_secs() / u64::from(config.auto_interval_s.max(1))
 }
 
 #[cfg(test)]
@@ -397,11 +447,11 @@ mod tests {
         }
     }
 
-    fn sensors(cpu_temp: Option<f32>, cpu_usage: f32) -> Readings {
-        Readings {
-            cpu_temp,
-            cpu_usage,
-            ..Readings::default()
+    fn sensors(temp: Option<f32>, usage: f32) -> Values {
+        Values {
+            temp,
+            usage: Some(usage),
+            ..Values::default()
         }
     }
 
@@ -409,8 +459,8 @@ mod tests {
     fn power_mode_falls_back_to_temperature() {
         let at = Duration::ZERO;
         let c = config(Mode::Power);
-        let with_power = Readings {
-            cpu_power: Some(65.0),
+        let with_power = Values {
+            power: Some(65.0),
             ..sensors(Some(50.0), 20.0)
         };
         assert_eq!(
@@ -431,9 +481,54 @@ mod tests {
     }
 
     #[test]
+    fn gpu_values_without_usage_fall_back_to_temperature() {
+        let gpu = Values {
+            temp: Some(61.0),
+            ..Values::default()
+        };
+        assert_eq!(
+            choose_reading(&config(Mode::Usage), &gpu, Duration::ZERO),
+            Reading::Temperature {
+                celsius: 61.0,
+                unit: Unit::Celsius
+            }
+        );
+        assert_eq!(
+            choose_reading(&config(Mode::Usage), &Values::default(), Duration::ZERO),
+            Reading::Usage { percent: 0.0 }
+        );
+    }
+
+    #[test]
+    fn components() {
+        let at = |secs| Duration::from_secs(secs);
+        let with = |source, mode| Config {
+            source,
+            ..config(mode)
+        };
+        let gpu = with(Source::Gpu, Mode::Temperature);
+        assert_eq!(choose_component(&gpu, true, at(0)), Component::Gpu);
+        assert_eq!(choose_component(&gpu, false, at(0)), Component::Cpu);
+
+        let auto = with(Source::Auto, Mode::Temperature);
+        let shown: Vec<_> = [0, 5, 10]
+            .map(|s| choose_component(&auto, true, at(s)))
+            .into();
+        assert_eq!(shown, [Component::Cpu, Component::Gpu, Component::Cpu]);
+
+        // Both alternating: CPU temperature, CPU usage, GPU temperature, GPU usage.
+        let both = with(Source::Auto, Mode::Auto);
+        let shown: Vec<_> = [0, 5, 10, 15, 20]
+            .map(|s| choose_component(&both, true, at(s)))
+            .into();
+        let (c, g) = (Component::Cpu, Component::Gpu);
+        assert_eq!(shown, [c, c, g, g, c]);
+    }
+
+    #[test]
     fn sensors_open_on_demand_and_once() {
         let mut opens = 0;
-        let mut sensor = OnDemand::<f32>::new("test");
+        let mut sensor = OnDemand::<f32>::new("test", |v| v.to_string());
         let read = |v: &mut f32| Ok(Some(*v));
         assert_eq!(sensor.sample(false, || unreachable!(), read), None);
         for _ in 0..2 {
@@ -445,7 +540,7 @@ mod tests {
         }
         assert_eq!(opens, 1);
 
-        let mut broken = OnDemand::<f32>::new("broken");
+        let mut broken = OnDemand::<f32>::new("broken", |v| v.to_string());
         let fail = || Err(io::Error::other("no driver"));
         assert_eq!(broken.sample(true, fail, read), None);
         assert_eq!(broken.sample(true, || unreachable!(), read), None);

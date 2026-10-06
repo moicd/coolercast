@@ -39,6 +39,8 @@ These links always point to the latest version. Older versions, release notes an
 - CPU temperature (°C or °F), CPU usage, both alternating, or a fixed number of your choice.
 - CPU power and frequency for the displays that show them (LS, LD, LQ and DIGITAL PRO models),
   read only while such a display is connected.
+- GPU temperature, usage, power and clock (NVIDIA, AMD and Intel) for the CH series cases, and on
+  any display with `source = "gpu"` or `"auto"` (alternates CPU and GPU).
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a service: starts with the PC, no window needed.
 - Windows: optional tray icon that shows the temperature, and a settings window with a live preview
@@ -69,11 +71,13 @@ These links always point to the latest version. Older versions, release notes an
 | AK620 G2 / AK400 G2 / AK500 G2 DIGITAL NYX | `3633:0029`, `3633:002B`, `3633:002C` | Experimental, untested |
 | AK700 DIGITAL NYX | `3633:002A` | Experimental, untested |
 | CH510 MESH DIGITAL (case) | `34D3:1100` | Experimental, untested |
+| CH560 DIGITAL / CH360 DIGITAL / MORPHEUS (cases) | `3633:0005`, `3633:0015`, `3633:0007` | Experimental, untested |
+| CH170 / CH270 / CH690 DIGITAL (cases) | `3633:0013`, `3633:0016`, `3633:001B` | Experimental, untested |
 
 The experimental models are implemented from community protocol notes and have not been tried on
 real hardware yet. If you own one, `coolercast list` and `coolercast test` (see [Usage](#usage))
 tell quickly whether it works; please [report the result](https://github.com/moicd/coolercast/issues),
-good or bad. GPU values, the CH series and the LP pixel displays are not supported yet. See
+good or bad. The LP pixel displays are not supported yet. See
 [docs/protocol-ak-series.md](docs/protocol-ak-series.md) and
 [docs/protocol-other-series.md](docs/protocol-other-series.md) for how the displays work.
 
@@ -85,6 +89,14 @@ good or bad. GPU values, the CH series and the LP pixel displays are not support
 
 The CPU power comes from the RAPL energy counter (PawnIO on Windows, powercap on Linux) and the
 frequency from the Windows performance counters or Linux cpufreq.
+
+| GPU | Windows | Linux |
+|---|---|---|
+| NVIDIA | NVML (from the driver): all values | `nvidia-smi` (proprietary driver), or the `nouveau` sensors |
+| AMD | Temperature, usage and clock from the Windows graphics kernel (as in Task Manager); no power | All values from `amdgpu` |
+| Intel | As AMD | Clock, plus temperature and power on discrete cards; no usage |
+
+The AMD path on Windows is tested with a Radeon RX 550; the rest is untested.
 
 ## Install on Windows
 
@@ -238,6 +250,7 @@ by editing the file (as administrator or root); the service picks up changes imm
 | Key | Values | Default |
 |---|---|---|
 | `mode` | `temperature`, `usage`, `auto` (alternates), `power` (LS series), `custom` | `temperature` |
+| `source` | `cpu`, `gpu`, `auto` (alternates every `auto_interval_s`) | `cpu` |
 | `unit` | `celsius`, `fahrenheit` | `celsius` |
 | `alarm` | `true`, `false` | `true` |
 | `alarm_threshold` | 40–110 (°C) | `90` |
@@ -250,7 +263,10 @@ by editing the file (as administrator or root); the service picks up changes imm
 In `custom` mode the temperature alarm still blinks the display when the CPU gets hot. A display
 that cannot show the chosen value shows the temperature instead (for example, `power` on an AK
 cooler or `usage` on an LS one). Displays that show several values at once (LD, LQ, DIGITAL PRO,
-CH510) ignore `mode` and the `custom_*` settings.
+CH510, CH 2nd generation) ignore `mode` and the `custom_*` settings. `source` picks what the
+single-value displays, the CH510 and the CH 2nd generation show; the CH series always shows the
+CPU and the GPU, and the LD, LQ and DIGITAL PRO displays only the CPU. Without GPU readings the
+CPU is shown.
 
 ### Exploring the display
 
@@ -279,6 +295,7 @@ The Windows service log is at `C:\ProgramData\CoolerCast\coolercast.log`.
 coolercast (service)
  ├─ CPU usage ........ GetSystemTimes (Windows), /proc/stat (Linux)
  ├─ CPU temperature .. PawnIO + IntelMSR / AMDFamily17 module (Windows), hwmon (Linux)
+ ├─ GPU (on demand) .. NVML or D3DKMT + PDH (Windows), sysfs or nvidia-smi (Linux)
  ├─ Cooler display ... HID output report once per second (WriteFile / /dev/hidraw)
  └─ control channel .. \\.\pipe\coolercast (Windows), /run/coolercast/coolercast.sock (Linux)
                         ◄── coolercast-app.exe / coolercast status|set

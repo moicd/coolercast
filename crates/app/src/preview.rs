@@ -2,7 +2,7 @@
 //! bar, lit the same way as the real one.
 
 use coolercast_core::config::{Config, Symbol, Unit};
-use coolercast_core::device::{self, Family, ak};
+use coolercast_core::device::{self, Component, Family, ak};
 use coolercast_core::ipc::{Shown, Status};
 
 use crate::gfx::{Align, Canvas, Color, Rect, Weight};
@@ -33,7 +33,11 @@ pub fn applies_to(devices: &[String]) -> bool {
 impl Frame {
     pub fn from_status(status: &Status) -> Option<Self> {
         let alarm = status.alarm_active;
-        let (value, bar, symbol) = match (status.shown?, status.cpu_temp) {
+        let (temp, usage) = match status.component {
+            Some(Component::Gpu) => (status.gpu.temp, status.gpu.usage),
+            _ => (status.cpu_temp, status.cpu_usage),
+        };
+        let (value, bar, symbol) = match (status.shown?, temp) {
             (Shown::Custom, _) => return Some(Self::custom(&status.config, alarm)),
             // AK displays have no power symbol and show the temperature instead.
             (Shown::Temperature | Shown::Power, Some(t)) => {
@@ -45,7 +49,7 @@ impl Frame {
                 (unit.from_celsius(t), t, symbol)
             }
             _ => {
-                let usage = status.cpu_usage?;
+                let usage = usage?;
                 (usage, usage, Symbol::Percent)
             }
         };
@@ -258,6 +262,15 @@ mod tests {
         assert!(applies_to(&names(&["LQ240/LQ360", "AK620 DIGITAL"])));
         assert!(!applies_to(&names(&["AK620 DIGITAL PRO"])));
         assert!(!applies_to(&names(&["LS520/LS720 SE DIGITAL"])));
+    }
+
+    #[test]
+    fn gpu_component_shows_gpu_values() {
+        let mut s = status(Shown::Temperature, 47.0, 3.0);
+        s.component = Some(Component::Gpu);
+        s.gpu.temp = Some(71.2);
+        let f = Frame::from_status(&s).unwrap();
+        assert_eq!(f.digits, [None, Some(7), Some(1)]);
     }
 
     #[test]

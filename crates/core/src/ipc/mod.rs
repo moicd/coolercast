@@ -8,6 +8,8 @@ use std::io;
 use std::thread::JoinHandle;
 
 use crate::config::Config;
+use crate::device::Component;
+use crate::sensors::Values;
 
 #[cfg(target_os = "linux")]
 mod unix;
@@ -60,6 +62,12 @@ pub struct Status {
     pub cpu_power: Option<f32>,
     /// Average CPU frequency in MHz, measured only while a display shows it.
     pub cpu_freq: Option<f32>,
+    /// The GPU in use, while a display shows GPU values.
+    pub gpu_name: Option<String>,
+    /// GPU values, measured only while a display shows them.
+    pub gpu: Values,
+    /// The component single-value displays show right now.
+    pub component: Option<Component>,
     /// Why the temperature is unavailable, if it is.
     pub temp_error: Option<String>,
     /// What the display shows right now (`None` before the first update).
@@ -96,6 +104,27 @@ impl Status {
         line(
             "cpu_freq",
             &self.cpu_freq.map_or(String::new(), |f| format!("{f:.0}")),
+        );
+        line("gpu_name", self.gpu_name.as_deref().unwrap_or(""));
+        let gpu = &self.gpu;
+        for (key, value, decimals) in [
+            ("gpu_temp", gpu.temp, 1),
+            ("gpu_usage", gpu.usage, 1),
+            ("gpu_power", gpu.power, 1),
+            ("gpu_freq", gpu.freq, 0),
+        ] {
+            line(
+                key,
+                &value.map_or(String::new(), |v| format!("{v:.decimals$}")),
+            );
+        }
+        line(
+            "component",
+            match self.component {
+                Some(Component::Cpu) => "cpu",
+                Some(Component::Gpu) => "gpu",
+                None => "",
+            },
         );
         line("temp_error", self.temp_error.as_deref().unwrap_or(""));
         line(
@@ -146,6 +175,18 @@ impl Status {
                 "cpu_usage" => status.cpu_usage = number(),
                 "cpu_power" => status.cpu_power = number(),
                 "cpu_freq" => status.cpu_freq = number(),
+                "gpu_name" => status.gpu_name = Some(value.to_owned()).filter(|n| !n.is_empty()),
+                "gpu_temp" => status.gpu.temp = number(),
+                "gpu_usage" => status.gpu.usage = number(),
+                "gpu_power" => status.gpu.power = number(),
+                "gpu_freq" => status.gpu.freq = number(),
+                "component" => {
+                    status.component = match value {
+                        "cpu" => Some(Component::Cpu),
+                        "gpu" => Some(Component::Gpu),
+                        _ => None,
+                    }
+                }
                 "temp_error" => {
                     status.temp_error = Some(value.to_owned()).filter(|e| !e.is_empty())
                 }
@@ -214,6 +255,14 @@ mod tests {
             cpu_usage: Some(12.0),
             cpu_power: Some(87.5),
             cpu_freq: Some(4700.0),
+            gpu_name: Some("Radeon RX550/550 Series".into()),
+            gpu: Values {
+                temp: Some(34.0),
+                usage: Some(12.5),
+                power: None,
+                freq: Some(1124.0),
+            },
+            component: Some(Component::Gpu),
             temp_error: None,
             shown: Some(Shown::Power),
             alarm_active: true,
