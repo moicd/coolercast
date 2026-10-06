@@ -17,6 +17,7 @@ use std::{env, io};
 use coolercast_core::config::{Config, Unit};
 use coolercast_core::device::{self, Component, Cooler, Reading, Readings, Update, ak};
 use coolercast_core::engine::Engine;
+use coolercast_core::ipc::DisplayOff;
 use coolercast_core::sensors::Values;
 use coolercast_core::sensors::cpu_freq::CpuFreq;
 use coolercast_core::sensors::cpu_power::CpuPower;
@@ -41,10 +42,12 @@ Commands:
   set <key=value>   Change a setting of the running service, e.g. `set mode=auto`
 {service}  version           Print the version
 
-Settings: mode (temperature|usage|auto|power|custom), source (cpu|gpu|auto),
-          unit (celsius|fahrenheit), alarm (on|off),
+Settings: mode (temperature|usage|auto|power|custom), source (cpu|gpu|auto|smart),
+          bar (value|usage), unit (celsius|fahrenheit), alarm (on|off),
           alarm_threshold (°C), interval_ms, auto_interval_s,
-          custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10)
+          custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10),
+          off_when_locked, off_when_screen_off, off_at_night (on|off), night_start,
+          night_end (HH:MM)
 ";
 
 #[cfg(windows)]
@@ -327,6 +330,7 @@ fn test_update(reading: Reading, readings: Readings, unit: Unit, alarm: bool) ->
         readings,
         unit,
         alarm,
+        usage_bar: false,
     }
 }
 
@@ -603,6 +607,14 @@ fn status() -> Result {
     }
     if s.component == Some(Component::Gpu) {
         println!("Showing      GPU");
+    }
+    if let Some(reason) = s.display_off {
+        let why = match reason {
+            DisplayOff::Locked => "the PC is locked",
+            DisplayOff::ScreenOff => "the screen is off",
+            DisplayOff::Night => "night schedule",
+        };
+        println!("Display      off ({why})");
     }
     println!();
     for (key, value) in s.config.entries() {

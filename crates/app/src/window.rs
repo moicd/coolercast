@@ -150,7 +150,7 @@ impl Control {
     fn segments(self) -> &'static [&'static str] {
         match self {
             Control::Mode => &["Temperature", "Usage", "Alternate", "Custom"],
-            Control::Source => &["CPU", "GPU", "Alternate"],
+            Control::Source => &["CPU", "GPU", "Alternate", "Smart"],
             Control::Unit => &["°C", "°F"],
             Control::CustomSymbol => &["°C", "°F", "%"],
             _ => &[],
@@ -172,6 +172,7 @@ impl Control {
                 Source::Cpu => 0,
                 Source::Gpu => 1,
                 Source::Auto => 2,
+                Source::Smart => 3,
             },
             Control::CustomSymbol => match config.custom_symbol {
                 Symbol::Celsius => 0,
@@ -194,7 +195,9 @@ impl Control {
                 config.mode = MODES[index.min(3)];
             }
             Control::Source => {
-                config.source = [Source::Cpu, Source::Gpu, Source::Auto][index.min(2)]
+                const SOURCES: [Source; 4] =
+                    [Source::Cpu, Source::Gpu, Source::Auto, Source::Smart];
+                config.source = SOURCES[index.min(3)];
             }
             Control::Unit => config.unit = [Unit::Celsius, Unit::Fahrenheit][index.min(1)],
             Control::CustomSymbol => {

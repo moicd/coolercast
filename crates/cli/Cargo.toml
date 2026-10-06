@@ -20,7 +20,12 @@ windows-service.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
-features = ["Win32_Foundation", "Win32_System_Console"]
+features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Power",
+    "Win32_UI_WindowsAndMessaging",
+]
 
 [lints]
 workspace = true

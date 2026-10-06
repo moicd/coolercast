@@ -45,6 +45,33 @@ pub enum Shown {
     Custom,
 }
 
+/// Why the display is off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayOff {
+    Locked,
+    ScreenOff,
+    Night,
+}
+
+impl DisplayOff {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DisplayOff::Locked => "locked",
+            DisplayOff::ScreenOff => "screen",
+            DisplayOff::Night => "night",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "locked" => Some(DisplayOff::Locked),
+            "screen" => Some(DisplayOff::ScreenOff),
+            "night" => Some(DisplayOff::Night),
+            _ => None,
+        }
+    }
+}
+
 /// One sensor reading per refresh interval.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sample {
@@ -74,6 +101,8 @@ pub struct Status {
     pub shown: Option<Shown>,
     /// Whether the display is blinking its alarm.
     pub alarm_active: bool,
+    /// Why the display is turned off, if it is.
+    pub display_off: Option<DisplayOff>,
     /// Recent samples, oldest first, at most [`HISTORY_LEN`].
     pub history: Vec<Sample>,
     pub config: Config,
@@ -141,6 +170,10 @@ impl Status {
             "alarm_active",
             if self.alarm_active { "true" } else { "false" },
         );
+        line(
+            "display_off",
+            self.display_off.map_or("", DisplayOff::as_str),
+        );
         let history: Vec<String> = self
             .history
             .iter()
@@ -200,6 +233,7 @@ impl Status {
                     }
                 }
                 "alarm_active" => status.alarm_active = value == "true",
+                "display_off" => status.display_off = DisplayOff::parse(value),
                 "history" => {
                     status.history = value
                         .split(',')
@@ -266,6 +300,7 @@ mod tests {
             temp_error: None,
             shown: Some(Shown::Power),
             alarm_active: true,
+            display_off: Some(DisplayOff::Night),
             history: vec![
                 Sample {
                     cpu_temp: Some(40.5),

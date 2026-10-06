@@ -4,6 +4,7 @@
 #[cfg(not(all(any(windows, target_os = "linux"), target_arch = "x86_64")))]
 compile_error!("CoolerCast supports Windows and Linux on x86-64");
 
+pub mod clock;
 pub mod config;
 pub mod device;
 pub mod engine;

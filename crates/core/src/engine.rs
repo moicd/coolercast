@@ -2,12 +2,14 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::config::{Config, Mode, Source};
+use crate::clock::LocalClock;
+use crate::config::{Bar, ClockTime, Config, Mode, Source};
 use crate::device::{self, Component, Cooler, Reading, Readings, Update};
-use crate::ipc::{HISTORY_LEN, Sample, Shown, Status};
+use crate::ipc::{DisplayOff, HISTORY_LEN, Sample, Shown, Status};
 use crate::sensors::Values;
 use crate::sensors::cpu_freq::CpuFreq;
 use crate::sensors::cpu_power::CpuPower;
@@ -19,10 +21,20 @@ use crate::{info, warn};
 /// How often to look for coolers while none is connected.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
+/// `source = "smart"` switches to the GPU above this usage...
+const SMART_GPU_ON: f32 = 50.0;
+/// ...and back to the CPU below this one.
+const SMART_GPU_OFF: f32 = 30.0;
+/// Shortest time `smart` keeps a component, so short spikes do not flip the display.
+const SMART_HOLD: Duration = Duration::from_secs(3);
+
 pub struct Engine {
     state: Mutex<State>,
     config_path: Option<PathBuf>,
     signal: Signal,
+    /// Set by the Windows service from session and power notifications.
+    locked: AtomicBool,
+    screen_off: AtomicBool,
 }
 
 /// Wakes the update loop early: to stop it, or to apply new settings right away.
@@ -75,7 +87,21 @@ impl Engine {
             }),
             config_path,
             signal: Signal::default(),
+            locked: AtomicBool::new(false),
+            screen_off: AtomicBool::new(false),
         }
+    }
+
+    /// Tells the engine whether the user session is locked.
+    pub fn set_locked(&self, locked: bool) {
+        self.locked.store(locked, Ordering::Relaxed);
+        self.signal.raise(|f| f.wake = true);
+    }
+
+    /// Tells the engine whether the PC screen is off.
+    pub fn set_screen_off(&self, off: bool) {
+        self.screen_off.store(off, Ordering::Relaxed);
+        self.signal.raise(|f| f.wake = true);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -148,6 +174,9 @@ impl Engine {
         let mut coolers: Vec<Cooler> = Vec::new();
         let mut next_scan = Instant::now();
         let started = Instant::now();
+        let mut smart = Smart::default();
+        let mut clock = LocalClock::default();
+        let mut was_off = None;
 
         loop {
             self.reload_config_if_edited();
@@ -194,9 +223,11 @@ impl Engine {
                     )
                     .unwrap_or_default(),
             };
+            let elapsed = started.elapsed();
             let gpu_available = readings.gpu.temp.is_some() || readings.gpu.usage.is_some();
-            let component = choose_component(&config, gpu_available, started.elapsed());
-            let reading = choose_reading(&config, &readings.of(component), started.elapsed());
+            let smart = smart.update(readings.gpu.usage, elapsed);
+            let component = choose_component(&config, gpu_available, smart, elapsed);
+            let reading = choose_reading(&config, &readings.of(component), elapsed);
             let alarm =
                 config.alarm && cpu_temp.is_some_and(|t| t >= f32::from(config.alarm_threshold));
             let update = Update {
@@ -205,14 +236,37 @@ impl Engine {
                 readings,
                 unit: config.unit,
                 alarm,
+                usage_bar: config.bar == Bar::Usage,
             };
-            coolers.retain_mut(|cooler| match cooler.show(&update) {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!("{} disconnected: {e}", cooler.name());
-                    false
+            let now = if config.off_at_night {
+                clock.now()
+            } else {
+                None
+            };
+            let off = display_off(
+                &config,
+                self.locked.load(Ordering::Relaxed),
+                self.screen_off.load(Ordering::Relaxed),
+                now,
+            );
+            if was_off != Some(off) {
+                match off {
+                    Some(reason) => info!("display off ({})", reason.as_str()),
+                    None if was_off.is_some() => info!("display on"),
+                    None => {}
                 }
-            });
+                was_off = Some(off);
+            }
+            // Without reports the display goes dark by itself within a few seconds.
+            if off.is_none() {
+                coolers.retain_mut(|cooler| match cooler.show(&update) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        warn!("{} disconnected: {e}", cooler.name());
+                        false
+                    }
+                });
+            }
 
             {
                 let mut state = self.lock();
@@ -228,6 +282,7 @@ impl Engine {
                     status.gpu_name = gpu_name.map(ToOwned::to_owned);
                 }
                 status.component = Some(component);
+                status.display_off = off;
                 status.shown = Some(match reading {
                     Reading::Temperature { .. } => Shown::Temperature,
                     Reading::Usage { .. } => Shown::Usage,
@@ -380,12 +435,62 @@ fn open_coolers() -> Vec<Cooler> {
     coolers
 }
 
+/// Why the display should be off now, if it should. `now` is the local time, when known.
+pub fn display_off(
+    config: &Config,
+    locked: bool,
+    screen_off: bool,
+    now: Option<ClockTime>,
+) -> Option<DisplayOff> {
+    if config.off_when_locked && locked {
+        Some(DisplayOff::Locked)
+    } else if config.off_when_screen_off && screen_off {
+        Some(DisplayOff::ScreenOff)
+    } else if config.off_at_night
+        && now.is_some_and(|t| ClockTime::in_range(t, config.night_start, config.night_end))
+    {
+        Some(DisplayOff::Night)
+    } else {
+        None
+    }
+}
+
+/// The component `source = "smart"` shows: the GPU while it is busy, the CPU otherwise.
+#[derive(Debug, Default)]
+struct Smart {
+    component: Component,
+    /// When `component` was last changed.
+    since: Duration,
+}
+
+impl Smart {
+    fn update(&mut self, gpu_usage: Option<f32>, now: Duration) -> Component {
+        let busy = match (self.component, gpu_usage) {
+            (_, None) => false,
+            (Component::Gpu, Some(u)) => u >= SMART_GPU_OFF,
+            (Component::Cpu, Some(u)) => u >= SMART_GPU_ON,
+        };
+        let wanted = if busy { Component::Gpu } else { Component::Cpu };
+        if wanted != self.component && now.saturating_sub(self.since) >= SMART_HOLD {
+            self.component = wanted;
+            self.since = now;
+        }
+        self.component
+    }
+}
+
 /// The component single-value displays show now. Without GPU readings it is always the CPU.
-pub fn choose_component(config: &Config, gpu_available: bool, elapsed: Duration) -> Component {
+pub fn choose_component(
+    config: &Config,
+    gpu_available: bool,
+    smart: Component,
+    elapsed: Duration,
+) -> Component {
     match config.source {
         Source::Cpu => Component::Cpu,
         _ if !gpu_available => Component::Cpu,
         Source::Gpu => Component::Gpu,
+        Source::Smart => smart,
         Source::Auto => {
             let phase = auto_phase(config, elapsed);
             // When the mode alternates too, each component shows both of its values in turn.
@@ -507,19 +612,24 @@ mod tests {
             ..config(mode)
         };
         let gpu = with(Source::Gpu, Mode::Temperature);
-        assert_eq!(choose_component(&gpu, true, at(0)), Component::Gpu);
-        assert_eq!(choose_component(&gpu, false, at(0)), Component::Cpu);
+        let cpu = Component::Cpu;
+        assert_eq!(choose_component(&gpu, true, cpu, at(0)), Component::Gpu);
+        assert_eq!(choose_component(&gpu, false, cpu, at(0)), Component::Cpu);
+        let smart = with(Source::Smart, Mode::Temperature);
+        let g = Component::Gpu;
+        assert_eq!(choose_component(&smart, true, g, at(0)), Component::Gpu);
+        assert_eq!(choose_component(&smart, false, g, at(0)), Component::Cpu);
 
         let auto = with(Source::Auto, Mode::Temperature);
         let shown: Vec<_> = [0, 5, 10]
-            .map(|s| choose_component(&auto, true, at(s)))
+            .map(|s| choose_component(&auto, true, cpu, at(s)))
             .into();
         assert_eq!(shown, [Component::Cpu, Component::Gpu, Component::Cpu]);
 
         // Both alternating: CPU temperature, CPU usage, GPU temperature, GPU usage.
         let both = with(Source::Auto, Mode::Auto);
         let shown: Vec<_> = [0, 5, 10, 15, 20]
-            .map(|s| choose_component(&both, true, at(s)))
+            .map(|s| choose_component(&both, true, cpu, at(s)))
             .into();
         let (c, g) = (Component::Cpu, Component::Gpu);
         assert_eq!(shown, [c, c, g, g, c]);
@@ -630,5 +740,50 @@ mod tests {
         );
         assert!(engine.handle_request("reboot").starts_with("error:"));
         assert!(engine.handle_request("status").starts_with("ok\n"));
+    }
+
+    #[test]
+    fn smart_follows_a_busy_gpu_with_hysteresis_and_hold() {
+        let at = Duration::from_secs;
+        let mut smart = Smart::default();
+        assert_eq!(smart.update(Some(40.0), at(10)), Component::Cpu);
+        assert_eq!(smart.update(Some(80.0), at(11)), Component::Gpu);
+        // Within the hold time a drop does not switch back.
+        assert_eq!(smart.update(Some(5.0), at(12)), Component::Gpu);
+        // Above the lower threshold it stays on the GPU.
+        assert_eq!(smart.update(Some(35.0), at(20)), Component::Gpu);
+        assert_eq!(smart.update(Some(10.0), at(21)), Component::Cpu);
+        assert_eq!(smart.update(None, at(30)), Component::Cpu);
+    }
+
+    #[test]
+    fn display_off_reasons() {
+        let t = ClockTime::new;
+        let all = Config {
+            off_when_locked: true,
+            off_when_screen_off: true,
+            off_at_night: true,
+            ..Config::default()
+        };
+        let day = Some(t(12, 0));
+        let night = Some(t(1, 0));
+        assert_eq!(
+            display_off(&all, true, false, day),
+            Some(DisplayOff::Locked)
+        );
+        assert_eq!(
+            display_off(&all, false, true, day),
+            Some(DisplayOff::ScreenOff)
+        );
+        assert_eq!(
+            display_off(&all, false, false, night),
+            Some(DisplayOff::Night)
+        );
+        assert_eq!(display_off(&all, false, false, day), None);
+        // Unknown local time: the night schedule does not apply.
+        assert_eq!(display_off(&all, false, false, None), None);
+        // Disabled by default.
+        let defaults = Config::default();
+        assert_eq!(display_off(&defaults, true, true, night), None);
     }
 }
