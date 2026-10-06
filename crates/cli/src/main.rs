@@ -14,8 +14,10 @@ use std::time::Duration;
 use std::{env, io};
 
 use coolercast_core::config::{Config, Unit};
-use coolercast_core::device::{self, Cooler, Reading, ak};
+use coolercast_core::device::{self, Cooler, Reading, Readings, Update, ak};
 use coolercast_core::engine::Engine;
+use coolercast_core::sensors::cpu_freq::CpuFreq;
+use coolercast_core::sensors::cpu_power::CpuPower;
 use coolercast_core::sensors::cpu_temp::CpuTemp;
 use coolercast_core::sensors::cpu_usage::CpuUsage;
 use coolercast_core::{error, ipc, log, paths};
@@ -30,12 +32,13 @@ Commands:
   test              Play a test pattern on the connected coolers
   probe <what>      Step through undocumented display values (service stopped):
                     probe mode|bar|digit [from] [to], or probe raw <6 bytes>
+                    (AK and LS series only)
   run               Drive the coolers in the foreground (Ctrl+C to stop)
   status            Show what the running service is doing
   set <key=value>   Change a setting of the running service, e.g. `set mode=auto`
 {service}  version           Print the version
 
-Settings: mode (temperature|usage|auto|custom), unit (celsius|fahrenheit), alarm (on|off),
+Settings: mode (temperature|usage|auto|power|custom), unit (celsius|fahrenheit), alarm (on|off),
           alarm_threshold (°C), interval_ms, auto_interval_s,
           custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10)
 ";
@@ -130,9 +133,13 @@ fn list() -> Result {
     }
     for d in &detected {
         let i = &d.info;
+        let name = match d.model {
+            Some(m) if m.experimental => format!("{} (experimental)", m.name),
+            Some(m) => m.name.to_owned(),
+            None => "unsupported".to_owned(),
+        };
         println!(
-            "  {:<16} {} (serial {}), VID {:04X} PID {:04X}, report ID {}, {}-byte reports",
-            d.model.map_or("unsupported", |m| m.name),
+            "  {name:<16} {} (serial {}), VID {:04X} PID {:04X}, report ID {}, {}-byte reports",
             i.product,
             if i.serial.is_empty() { "-" } else { &i.serial },
             i.vendor_id,
@@ -151,11 +158,35 @@ fn list() -> Result {
         Err(e) => println!("  unavailable: {e}"),
     }
 
+    // Usage, power and frequency are averages: sample them over the same half second.
     let mut usage = CpuUsage::new();
+    let power = CpuPower::open();
+    let freq = CpuFreq::open();
     thread::sleep(Duration::from_millis(500));
     println!("CPU usage\n  {:.0} %", usage.sample());
+
+    println!("CPU power (LS, LD, LQ and PRO displays)");
+    match power.and_then(|mut p| Ok((p.read()?, p.source().to_owned()))) {
+        Ok((Some(watts), source)) => println!("  {watts:.0} W from {source}"),
+        Ok((None, source)) => println!("  no reading yet from {source}"),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            println!("  unavailable: {e}\n  Run this command {ELEVATED}.")
+        }
+        Err(e) => println!("  unavailable: {e}"),
+    }
+
+    println!("CPU frequency (AK500/AK620 PRO and LQ displays)");
+    match freq.and_then(|mut f| Ok((f.read()?, f.source()))) {
+        Ok((mhz, source)) => println!("  {mhz:.0} MHz from {source}"),
+        Err(e) => println!("  unavailable: {e}"),
+    }
     Ok(())
 }
+
+#[cfg(windows)]
+const ELEVATED: &str = "from an elevated terminal";
+#[cfg(target_os = "linux")]
+const ELEVATED: &str = "with sudo";
 
 fn test_pattern() -> Result {
     warn_if_official_app_running();
@@ -167,12 +198,15 @@ fn test_pattern() -> Result {
     if coolers.is_empty() {
         return Err("no supported cooler found".into());
     }
+    for cooler in &coolers {
+        println!("Testing {}", cooler.name());
+    }
 
-    let mut send = |label: &str, reading: Option<Reading>, alarm: bool, hold_ms: u64| -> Result {
+    let mut send = |label: &str, update: Option<Update>, hold_ms: u64| -> Result {
         println!("{label}");
         for cooler in &mut coolers {
-            match reading {
-                Some(r) => cooler.show(r, alarm)?,
+            match &update {
+                Some(update) => cooler.show(update)?,
                 None => cooler.init()?,
             }
         }
@@ -180,30 +214,74 @@ fn test_pattern() -> Result {
         Ok(())
     };
 
-    send("init: bar animation", None, false, 2500)?;
+    send("init: bar animation", None, 2500)?;
+    // Every value moves together, so displays that show several values change everywhere.
     for percent in (0..=100).step_by(10) {
-        let reading = Reading::Usage {
-            percent: percent as f32,
-        };
-        send(&format!("usage {percent} %"), Some(reading), false, 400)?;
+        let usage = percent as f32;
+        let readings = test_readings(30.0 + usage * 0.6, usage, usage * 2.0, 800.0 + usage * 40.0);
+        let label = format!(
+            "usage {percent} %, {:.0} °C, {:.0} W, {:.0} MHz",
+            readings.cpu_temp.unwrap_or_default(),
+            readings.cpu_power.unwrap_or_default(),
+            readings.cpu_freq.unwrap_or_default(),
+        );
+        let reading = Reading::Usage { percent: usage };
+        send(
+            &label,
+            Some(test_update(reading, readings, Unit::Celsius, false)),
+            400,
+        )?;
     }
-    let celsius = |celsius, unit| Some(Reading::Temperature { celsius, unit });
-    send("41 °C", celsius(41.0, Unit::Celsius), false, 2000)?;
+
+    let idle = test_readings(41.0, 12.0, 35.0, 3600.0);
+    let temperature = |celsius, unit| Reading::Temperature { celsius, unit };
+    let shown = temperature(41.0, Unit::Celsius);
     send(
-        "106 °F (41 °C)",
-        celsius(41.0, Unit::Fahrenheit),
-        false,
+        "41 °C",
+        Some(test_update(shown, idle, Unit::Celsius, false)),
         2000,
     )?;
-    send("92 °C with alarm", celsius(92.0, Unit::Celsius), true, 4000)?;
+    let shown = temperature(41.0, Unit::Fahrenheit);
+    let update = test_update(shown, idle, Unit::Fahrenheit, false);
+    send("106 °F (41 °C)", Some(update), 2000)?;
+    let busy = test_readings(41.0, 95.0, 142.0, 4800.0);
+    let update = test_update(Reading::Power { watts: 142.0 }, busy, Unit::Celsius, false);
     send(
-        "all segments: 888",
-        Some(Reading::Usage { percent: 888.0 }),
-        false,
+        "142 W (power mode: LS series; others show 41 °C)",
+        Some(update),
         2000,
     )?;
+    let hot = test_readings(92.0, 100.0, 180.0, 5000.0);
+    let update = test_update(temperature(92.0, Unit::Celsius), hot, Unit::Celsius, true);
+    send("92 °C with alarm", Some(update), 4000)?;
+    let eights = test_readings(888.0, 100.0, 888.0, 8888.0);
+    let update = test_update(
+        Reading::Usage { percent: 888.0 },
+        eights,
+        Unit::Celsius,
+        false,
+    );
+    send("all segments: 888", Some(update), 2000)?;
     println!("done");
     Ok(())
+}
+
+fn test_readings(celsius: f32, usage: f32, watts: f32, mhz: f32) -> Readings {
+    Readings {
+        cpu_temp: Some(celsius),
+        cpu_usage: usage,
+        cpu_power: Some(watts),
+        cpu_freq: Some(mhz),
+    }
+}
+
+fn test_update(reading: Reading, readings: Readings, unit: Unit, alarm: bool) -> Update {
+    Update {
+        reading,
+        readings,
+        unit,
+        alarm,
+    }
 }
 
 /// Which payload byte `probe` steps through; the others keep values that make the change
@@ -267,11 +345,13 @@ fn probe(args: &[String]) -> Result {
     warn_if_official_app_running();
     let mut coolers: Vec<Cooler> = device::detect()?
         .iter()
-        .filter(|d| d.model.is_some())
+        .filter(|d| d.model.is_some_and(|m| m.family.is_ak_like()))
         .map(Cooler::open)
         .collect::<io::Result<_>>()?;
     if coolers.is_empty() {
-        return Err("no supported cooler found".into());
+        return Err(
+            "no AK or LS series cooler found (probe only knows their report layout)".into(),
+        );
     }
     let mut send = |payload: [u8; ak::PAYLOAD_LEN]| -> Result {
         for cooler in &mut coolers {
@@ -426,6 +506,13 @@ fn status() -> Result {
     match s.cpu_usage {
         Some(u) => println!("Usage        {u:.0} %"),
         None => println!("Usage        -"),
+    }
+    // Only measured while a display shows them.
+    if let Some(w) = s.cpu_power {
+        println!("Power        {w:.0} W");
+    }
+    if let Some(f) = s.cpu_freq {
+        println!("Frequency    {f:.0} MHz");
     }
     println!();
     for (key, value) in s.config.entries() {

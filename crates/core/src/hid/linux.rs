@@ -10,12 +10,12 @@ use super::DeviceInfo;
 const SYSFS_HIDRAW: &str = "/sys/class/hidraw";
 const DEV: &str = "/dev";
 
-/// Lists the HID collections of a vendor.
-pub fn enumerate(vendor_id: u16) -> io::Result<Vec<DeviceInfo>> {
-    enumerate_in(Path::new(SYSFS_HIDRAW), Path::new(DEV), vendor_id)
+/// Lists the HID collections of the given vendors.
+pub fn enumerate(vendor_ids: &[u16]) -> io::Result<Vec<DeviceInfo>> {
+    enumerate_in(Path::new(SYSFS_HIDRAW), Path::new(DEV), vendor_ids)
 }
 
-fn enumerate_in(sysfs: &Path, dev: &Path, vendor_id: u16) -> io::Result<Vec<DeviceInfo>> {
+fn enumerate_in(sysfs: &Path, dev: &Path, vendor_ids: &[u16]) -> io::Result<Vec<DeviceInfo>> {
     let entries = match fs::read_dir(sysfs) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -27,7 +27,8 @@ fn enumerate_in(sysfs: &Path, dev: &Path, vendor_id: u16) -> io::Result<Vec<Devi
         let Ok(uevent) = fs::read_to_string(device.join("uevent")) else {
             continue;
         };
-        let Some(ids) = Uevent::parse(&uevent).filter(|ids| ids.vendor_id == vendor_id) else {
+        let Some(ids) = Uevent::parse(&uevent).filter(|ids| vendor_ids.contains(&ids.vendor_id))
+        else {
             continue;
         };
         let Ok(descriptor) = fs::read(device.join("report_descriptor")) else {
@@ -295,7 +296,7 @@ mod tests {
         );
         add("hidraw0", "HID_ID=0003:0000046D:0000C52B\nHID_NAME=Mouse\n");
 
-        let found = enumerate_in(&root, Path::new("/dev"), 0x3633).unwrap();
+        let found = enumerate_in(&root, Path::new("/dev"), &[0x3633]).unwrap();
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, "/dev/hidraw3");

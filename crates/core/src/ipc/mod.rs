@@ -39,6 +39,7 @@ pub const HISTORY_LEN: usize = 120;
 pub enum Shown {
     Temperature,
     Usage,
+    Power,
     Custom,
 }
 
@@ -55,6 +56,10 @@ pub struct Status {
     pub devices: Vec<String>,
     pub cpu_temp: Option<f32>,
     pub cpu_usage: Option<f32>,
+    /// CPU package power in watts, measured only while a display shows it.
+    pub cpu_power: Option<f32>,
+    /// Average CPU frequency in MHz, measured only while a display shows it.
+    pub cpu_freq: Option<f32>,
     /// Why the temperature is unavailable, if it is.
     pub temp_error: Option<String>,
     /// What the display shows right now (`None` before the first update).
@@ -84,12 +89,21 @@ impl Status {
             "cpu_usage",
             &self.cpu_usage.map_or(String::new(), |u| format!("{u:.1}")),
         );
+        line(
+            "cpu_power",
+            &self.cpu_power.map_or(String::new(), |w| format!("{w:.1}")),
+        );
+        line(
+            "cpu_freq",
+            &self.cpu_freq.map_or(String::new(), |f| format!("{f:.0}")),
+        );
         line("temp_error", self.temp_error.as_deref().unwrap_or(""));
         line(
             "shown",
             match self.shown {
                 Some(Shown::Temperature) => "temperature",
                 Some(Shown::Usage) => "usage",
+                Some(Shown::Power) => "power",
                 Some(Shown::Custom) => "custom",
                 None => "",
             },
@@ -130,6 +144,8 @@ impl Status {
                 }
                 "cpu_temp" => status.cpu_temp = number(),
                 "cpu_usage" => status.cpu_usage = number(),
+                "cpu_power" => status.cpu_power = number(),
+                "cpu_freq" => status.cpu_freq = number(),
                 "temp_error" => {
                     status.temp_error = Some(value.to_owned()).filter(|e| !e.is_empty())
                 }
@@ -137,6 +153,7 @@ impl Status {
                     status.shown = match value {
                         "temperature" => Some(Shown::Temperature),
                         "usage" => Some(Shown::Usage),
+                        "power" => Some(Shown::Power),
                         "custom" => Some(Shown::Custom),
                         _ => None,
                     }
@@ -195,8 +212,10 @@ mod tests {
             devices: vec!["AK400 DIGITAL".into(), "AK620 DIGITAL".into()],
             cpu_temp: Some(41.5),
             cpu_usage: Some(12.0),
+            cpu_power: Some(87.5),
+            cpu_freq: Some(4700.0),
             temp_error: None,
-            shown: Some(Shown::Usage),
+            shown: Some(Shown::Power),
             alarm_active: true,
             history: vec![
                 Sample {

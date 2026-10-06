@@ -160,6 +160,9 @@ impl Control {
                 Mode::Usage => 1,
                 Mode::Auto => 2,
                 Mode::Custom => 3,
+                // No segment (it would not fit): the power mode, for LS displays, is chosen
+                // from the tray menu or the CLI.
+                Mode::Power => 4,
             },
             Control::CustomSymbol => match config.custom_symbol {
                 Symbol::Celsius => 0,
@@ -1244,32 +1247,39 @@ impl Settings {
     fn draw_readout(&self, c: &Canvas, card: Rect) {
         let t = self.theme;
         self.draw_card(c, card);
-        // In custom mode the preview follows the settings as they are edited.
         let status = self.status.as_ref();
-        let frame = match status {
-            Some(s) if self.config.mode == Mode::Custom => {
-                Some(Frame::custom(&self.config, s.alarm_active))
-            }
-            _ => status.and_then(Frame::from_status),
-        };
-        preview::draw(
-            c,
-            Rect::new(card.x + 16.0, card.y + 16.0, 184.0, 110.0),
-            frame,
-        );
+        // The preview imitates an AK display; other displays get every value instead.
+        let preview = status.is_none_or(|s| preview::applies_to(&s.devices));
+        if preview {
+            // In custom mode the preview follows the settings as they are edited.
+            let frame = match status {
+                Some(s) if self.config.mode == Mode::Custom => {
+                    Some(Frame::custom(&self.config, s.alarm_active))
+                }
+                _ => status.and_then(Frame::from_status),
+            };
+            preview::draw(
+                c,
+                Rect::new(card.x + 16.0, card.y + 16.0, 184.0, 110.0),
+                frame,
+            );
+        }
 
-        let x = card.x + 216.0;
-        let w = card.right() - 16.0 - x;
         let unit = self.config.unit;
-        let status = self.status.as_ref();
         let temp = status
             .and_then(|s| s.cpu_temp)
             .map_or("--".into(), |v| format_temp(v, unit));
         let usage = status
             .and_then(|s| s.cpu_usage)
             .map_or("--".into(), |u| format!("{u:.0} %"));
+        let power = status
+            .and_then(|s| s.cpu_power)
+            .map_or("--".into(), |w| format!("{w:.0} W"));
+        let freq = status
+            .and_then(|s| s.cpu_freq)
+            .map_or("--".into(), |f| format!("{f:.0} MHz"));
         let alarm = status.is_some_and(|s| s.alarm_active);
-        let values = [
+        let mut values = vec![
             (
                 "CPU temperature",
                 temp,
@@ -1277,8 +1287,20 @@ impl Settings {
             ),
             ("CPU usage", usage, t.text),
         ];
+        if !preview {
+            values.push(("CPU power", power, t.text));
+            values.push(("CPU frequency", freq, t.text));
+        }
+        // One column next to the preview, or two columns across the card.
+        let (x0, columns) = if preview {
+            (card.x + 216.0, 1)
+        } else {
+            (card.x + 20.0, 2)
+        };
+        let w = (card.right() - 16.0 - x0) / columns as f32;
         for (i, (label, value, color)) in values.into_iter().enumerate() {
-            let y = card.y + 18.0 + i as f32 * 56.0;
+            let x = x0 + (i / 2 * (columns - 1)) as f32 * w;
+            let y = card.y + 18.0 + (i % 2) as f32 * 56.0;
             c.text(
                 label,
                 Rect::new(x, y, w, 16.0),

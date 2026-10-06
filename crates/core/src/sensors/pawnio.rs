@@ -5,13 +5,14 @@ use std::env;
 use std::ffi::CStr;
 use std::io;
 use std::path::PathBuf;
-use std::ptr;
+use std::{fs, ptr};
 
 use windows_sys::Win32::Foundation::{FreeLibrary, HANDLE, HMODULE};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 
+use crate::paths;
 use crate::win::wide;
 
 type OpenFn = unsafe extern "system" fn(*mut HANDLE) -> i32;
@@ -80,6 +81,17 @@ impl PawnIo {
         Ok(pawn)
     }
 
+    /// Loads one of the modules shipped next to the executable (`third_party/pawnio-modules`).
+    pub fn load_module(name: &str) -> io::Result<Self> {
+        let path = paths::module_file(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("PawnIO module {name} not found next to the executable"),
+            )
+        })?;
+        Self::load(&fs::read(path)?)
+    }
+
     /// Calls a function exported by the loaded module and returns how many outputs it wrote.
     pub fn execute(&self, function: &CStr, input: &[u64], output: &mut [u64]) -> io::Result<usize> {
         let mut written = 0usize;
@@ -106,6 +118,13 @@ impl Drop for PawnIo {
             FreeLibrary(self.library);
         }
     }
+}
+
+/// Reads a model-specific register through a module that exports `ioctl_read_msr`.
+pub fn read_msr(pawn: &PawnIo, msr: u64) -> io::Result<u64> {
+    let mut out = [0u64; 1];
+    pawn.execute(c"ioctl_read_msr", &[msr], &mut out)?;
+    Ok(out[0])
 }
 
 fn load_library() -> io::Result<HMODULE> {
