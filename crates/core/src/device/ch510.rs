@@ -1,17 +1,21 @@
 //! Output reports for the CH510 MESH DIGITAL case display: the ASCII text
 //! `HLXDATA(<usage>,<temperature>,0,0,<C|F>)\r\n` after the report ID. The usage drives the bar
-//! and the temperature the three digits. See `docs/protocol-other-series.md`.
+//! and the temperature the three digits, of the CPU or of the GPU.
+//! See `docs/protocol-other-series.md`.
 
 use std::io::Write;
 
-use super::Readings;
 use super::ak::{self, PACKET_LEN, Packet};
 use crate::config::Unit;
+use crate::sensors::Values;
 
-pub fn packet(report_id: u8, readings: &Readings, unit: Unit) -> Packet {
-    let usage = readings.cpu_usage.round().clamp(0.0, 100.0) as u8;
-    let temperature = readings
-        .cpu_temp
+/// A report with the usage and temperature of one component; missing values are sent as 0.
+pub fn packet(report_id: u8, values: &Values, unit: Unit) -> Packet {
+    let usage = values
+        .usage
+        .map_or(0, |u| u.round().clamp(0.0, 100.0) as u8);
+    let temperature = values
+        .temp
         .map_or(0, |celsius| ak::display_value(unit.from_celsius(celsius)));
     let unit = match unit {
         Unit::Celsius => 'C',
@@ -37,11 +41,11 @@ mod tests {
         std::str::from_utf8(&p[1..end]).unwrap()
     }
 
-    fn readings(cpu_temp: Option<f32>, cpu_usage: f32) -> Readings {
-        Readings {
-            cpu_temp,
-            cpu_usage,
-            ..Readings::default()
+    fn readings(temp: Option<f32>, usage: f32) -> Values {
+        Values {
+            temp,
+            usage: Some(usage),
+            ..Values::default()
         }
     }
 

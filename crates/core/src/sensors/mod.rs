@@ -1,15 +1,32 @@
-//! CPU sensors: usage from the kernel's idle counters; temperature, power and frequency from
-//! PawnIO and PDH (Windows) or sysfs (Linux). Power and frequency are only read when a connected
-//! display shows them.
+//! CPU and GPU sensors: CPU usage from the kernel's idle counters; CPU temperature, power and
+//! frequency from PawnIO and PDH (Windows) or sysfs (Linux); GPU values from the graphics
+//! driver. Everything but the CPU usage and temperature is only read while a connected display
+//! shows it.
 
 pub mod cpu_freq;
 pub mod cpu_power;
 pub mod cpu_temp;
 pub mod cpu_usage;
+pub mod gpu;
 #[cfg(windows)]
 pub mod pawnio;
+#[cfg(windows)]
+pub mod pdh;
 
 use std::arch::x86_64::__cpuid;
+
+/// Temperature, usage, power and clock of one component (CPU or GPU); `None` when unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Values {
+    /// Temperature in °C.
+    pub temp: Option<f32>,
+    /// Usage in percent.
+    pub usage: Option<f32>,
+    /// Power in watts.
+    pub power: Option<f32>,
+    /// Clock in MHz.
+    pub freq: Option<f32>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vendor {

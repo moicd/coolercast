@@ -3,14 +3,16 @@
 
 pub mod ag;
 pub mod ak;
+pub mod ch;
 pub mod ch510;
 pub mod framed;
 pub mod ls;
 
 use std::io;
 
-use crate::config::{Symbol, Unit};
+use crate::config::{Source, Symbol, Unit};
 use crate::hid::{self, DeviceInfo, HidDevice};
+use crate::sensors::Values;
 
 /// USB vendor ID used by DeepCool.
 pub const DEEPCOOL_VID: u16 = 0x3633;
@@ -40,6 +42,11 @@ pub enum Family {
     LqSeries,
     /// ASCII report with usage and temperature.
     Ch510,
+    /// Two AK-like sections, CPU above and GPU below (CH560, CH360 DIGITAL and MORPHEUS cases).
+    ChSeries,
+    /// Framed report with CPU and GPU values; shows one of them at a time (CH170, CH270 and
+    /// CH690 DIGITAL cases).
+    ChGen2,
 }
 
 impl Family {
@@ -52,12 +59,27 @@ impl Family {
                 | Family::Ak400Pro
                 | Family::Ak620Pro
                 | Family::LqSeries
+                | Family::ChGen2
         )
     }
 
     /// Whether the display needs the CPU frequency.
     pub fn uses_frequency(self) -> bool {
-        matches!(self, Family::Ak620Pro | Family::LqSeries)
+        matches!(self, Family::Ak620Pro | Family::LqSeries | Family::ChGen2)
+    }
+
+    /// Whether the display needs the GPU sensors with this `source` setting. The CH series
+    /// always shows the GPU; the CPU-only displays (LD, LQ, DIGITAL PRO) never do.
+    pub fn uses_gpu(self, source: Source) -> bool {
+        match self {
+            Family::ChSeries => true,
+            Family::AkSeries
+            | Family::AgSeries
+            | Family::LsSeries
+            | Family::Ch510
+            | Family::ChGen2 => source != Source::Cpu,
+            Family::LdSeries | Family::Ak400Pro | Family::Ak620Pro | Family::LqSeries => false,
+        }
     }
 
     /// Whether the display shows one value with three digits and a bar, like the settings
@@ -92,7 +114,9 @@ pub const MODELS: &[Model] = &[
     deepcool(0x0002, "AK620 DIGITAL", Family::AkSeries),
     deepcool(0x0003, "AK500 DIGITAL", Family::AkSeries),
     deepcool(0x0004, "AK500S DIGITAL", Family::AkSeries),
+    deepcool(0x0005, "CH560 DIGITAL", Family::ChSeries),
     deepcool(0x0006, "LS520/LS720 SE DIGITAL", Family::LsSeries),
+    deepcool(0x0007, "MORPHEUS", Family::ChSeries),
     deepcool(0x0008, "AG400/AG620 DIGITAL", Family::AgSeries),
     deepcool(0x000A, "LD240/LD360", Family::LdSeries),
     deepcool(0x000D, "LQ240/LQ360", Family::LqSeries),
@@ -100,6 +124,10 @@ pub const MODELS: &[Model] = &[
     deepcool(0x0010, "AK400 DIGITAL PRO", Family::Ak400Pro),
     deepcool(0x0011, "AK500 DIGITAL PRO", Family::Ak620Pro),
     deepcool(0x0012, "AK620 DIGITAL PRO", Family::Ak620Pro),
+    deepcool(0x0013, "CH170 DIGITAL", Family::ChGen2),
+    deepcool(0x0015, "CH360 DIGITAL", Family::ChSeries),
+    deepcool(0x0016, "CH270 DIGITAL", Family::ChGen2),
+    deepcool(0x001B, "CH690 DIGITAL", Family::ChGen2),
     deepcool(0x001F, "ASSASSIN IV VC VISION", Family::LqSeries),
     deepcool(0x0029, "AK620 G2 DIGITAL NYX", Family::LqSeries),
     deepcool(0x002A, "AK700 DIGITAL NYX", Family::LqSeries),
@@ -169,6 +197,14 @@ pub enum Reading {
     },
 }
 
+/// The part of the PC a value belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Component {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
 /// Sensor values of one refresh.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Readings {
@@ -180,6 +216,23 @@ pub struct Readings {
     pub cpu_power: Option<f32>,
     /// Average CPU frequency in MHz.
     pub cpu_freq: Option<f32>,
+    /// GPU values, all `None` while no display needs them.
+    pub gpu: Values,
+}
+
+impl Readings {
+    /// The values of one component.
+    pub fn of(&self, component: Component) -> Values {
+        match component {
+            Component::Cpu => Values {
+                temp: self.cpu_temp,
+                usage: Some(self.cpu_usage),
+                power: self.cpu_power,
+                freq: self.cpu_freq,
+            },
+            Component::Gpu => self.gpu,
+        }
+    }
 }
 
 /// Everything a display may need for one refresh.
@@ -187,6 +240,9 @@ pub struct Readings {
 pub struct Update {
     /// What single-value displays show, chosen from the configured mode.
     pub reading: Reading,
+    /// The component [`Update::reading`] belongs to, and the page of displays that show one
+    /// component at a time.
+    pub component: Component,
     /// All sensor values, for displays that show several at once.
     pub readings: Readings,
     pub unit: Unit,
@@ -206,8 +262,8 @@ impl Update {
         if supported {
             return self.reading;
         }
-        let r = &self.readings;
-        match (r.cpu_temp, r.cpu_power, family) {
+        let values = self.readings.of(self.component);
+        match (values.temp, values.power, family) {
             (Some(celsius), ..) => Reading::Temperature {
                 celsius,
                 unit: self.unit,
@@ -219,7 +275,7 @@ impl Update {
                 unit: self.unit,
             },
             (None, ..) => Reading::Usage {
-                percent: r.cpu_usage,
+                percent: values.usage.unwrap_or(0.0),
             },
         }
     }
@@ -262,7 +318,9 @@ impl Cooler {
     /// Sends the start-up sequence (AK and LS displays play their bar animation).
     pub fn init(&mut self) -> io::Result<()> {
         match self.model.family {
-            Family::AkSeries | Family::LsSeries => self.hid.write(&ak::init_packet(self.report_id)),
+            Family::AkSeries | Family::LsSeries | Family::ChSeries => {
+                self.hid.write(&ak::init_packet(self.report_id))
+            }
             Family::LdSeries => {
                 for packet in framed::ld_init_packets(self.report_id) {
                     self.hid.write(&packet)?;
@@ -273,7 +331,8 @@ impl Cooler {
             | Family::Ak400Pro
             | Family::Ak620Pro
             | Family::LqSeries
-            | Family::Ch510 => Ok(()),
+            | Family::Ch510
+            | Family::ChGen2 => Ok(()),
         }
     }
 
@@ -281,20 +340,28 @@ impl Cooler {
         let id = self.report_id;
         let family = self.model.family;
         let telemetry = || framed::Telemetry::new(&update.readings, update.unit);
+        let shown = update.readings.of(update.component);
         let packet = match family {
             Family::AkSeries => ak::packet(id, update.reading_for(family), update.alarm),
             Family::AgSeries => ag::packet(id, update.reading_for(family), update.alarm),
             Family::LsSeries => ls::packet(
                 id,
                 update.reading_for(family),
-                update.readings.cpu_usage,
+                shown.usage.unwrap_or(update.readings.cpu_usage),
                 update.alarm,
             ),
             Family::LdSeries => framed::packet(id, &framed::LD, &telemetry()),
             Family::Ak400Pro => framed::packet(id, &framed::AK400_PRO, &telemetry()),
             Family::Ak620Pro => framed::packet(id, &framed::AK620_PRO, &telemetry()),
             Family::LqSeries => framed::packet(id, &framed::LQ, &telemetry()),
-            Family::Ch510 => ch510::packet(id, &update.readings, update.unit),
+            Family::Ch510 => ch510::packet(id, &shown, update.unit),
+            Family::ChSeries => ch::packet(id, update),
+            Family::ChGen2 => framed::ch_gen2_packet(
+                id,
+                update.component,
+                &telemetry(),
+                &framed::Telemetry::from_values(&update.readings.gpu, update.unit),
+            ),
         };
         self.hid.write(&packet)
     }
@@ -319,17 +386,26 @@ mod tests {
     fn update(reading: Reading, readings: Readings) -> Update {
         Update {
             reading,
+            component: Component::Cpu,
             readings,
             unit: Unit::Celsius,
             alarm: false,
         }
     }
 
+    const GPU: Values = Values {
+        temp: Some(70.0),
+        usage: Some(90.0),
+        power: Some(180.0),
+        freq: Some(2500.0),
+    };
+
     const SENSORS: Readings = Readings {
         cpu_temp: Some(50.0),
         cpu_usage: 20.0,
         cpu_power: Some(65.0),
         cpu_freq: Some(4200.0),
+        gpu: GPU,
     };
 
     const TEMP: Reading = Reading::Temperature {
@@ -401,5 +477,31 @@ mod tests {
                 unit: Unit::Celsius
             }
         );
+    }
+
+    #[test]
+    fn gpu_component_falls_back_to_gpu_values() {
+        let gpu_update = |reading| Update {
+            component: Component::Gpu,
+            ..update(reading, SENSORS)
+        };
+        let power = Reading::Power { watts: 180.0 };
+        assert_eq!(
+            gpu_update(power).reading_for(Family::AkSeries),
+            Reading::Temperature {
+                celsius: 70.0,
+                unit: Unit::Celsius
+            }
+        );
+        assert_eq!(gpu_update(power).reading_for(Family::LsSeries), power);
+    }
+
+    #[test]
+    fn gpu_sensors_only_when_needed() {
+        assert!(Family::ChSeries.uses_gpu(Source::Cpu));
+        assert!(!Family::AkSeries.uses_gpu(Source::Cpu));
+        assert!(Family::AkSeries.uses_gpu(Source::Auto));
+        assert!(Family::ChGen2.uses_gpu(Source::Gpu));
+        assert!(!Family::LqSeries.uses_gpu(Source::Gpu));
     }
 }

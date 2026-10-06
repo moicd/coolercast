@@ -14,12 +14,14 @@ use std::time::Duration;
 use std::{env, io};
 
 use coolercast_core::config::{Config, Unit};
-use coolercast_core::device::{self, Cooler, Reading, Readings, Update, ak};
+use coolercast_core::device::{self, Component, Cooler, Reading, Readings, Update, ak};
 use coolercast_core::engine::Engine;
+use coolercast_core::sensors::Values;
 use coolercast_core::sensors::cpu_freq::CpuFreq;
 use coolercast_core::sensors::cpu_power::CpuPower;
 use coolercast_core::sensors::cpu_temp::CpuTemp;
 use coolercast_core::sensors::cpu_usage::CpuUsage;
+use coolercast_core::sensors::gpu::Gpu;
 use coolercast_core::{error, ipc, log, paths};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -38,7 +40,8 @@ Commands:
   set <key=value>   Change a setting of the running service, e.g. `set mode=auto`
 {service}  version           Print the version
 
-Settings: mode (temperature|usage|auto|power|custom), unit (celsius|fahrenheit), alarm (on|off),
+Settings: mode (temperature|usage|auto|power|custom), source (cpu|gpu|auto),
+          unit (celsius|fahrenheit), alarm (on|off),
           alarm_threshold (°C), interval_ms, auto_interval_s,
           custom_value (0-999), custom_symbol (celsius|fahrenheit|percent), custom_bar (1-10)
 ";
@@ -162,6 +165,7 @@ fn list() -> Result {
     let mut usage = CpuUsage::new();
     let power = CpuPower::open();
     let freq = CpuFreq::open();
+    let gpu = Gpu::open();
     thread::sleep(Duration::from_millis(500));
     println!("CPU usage\n  {:.0} %", usage.sample());
 
@@ -180,7 +184,29 @@ fn list() -> Result {
         Ok((mhz, source)) => println!("  {mhz:.0} MHz from {source}"),
         Err(e) => println!("  unavailable: {e}"),
     }
+
+    println!("GPU (CH series, or source=gpu|auto)");
+    match gpu.and_then(|mut g| Ok((g.read()?, g.name().to_owned(), g.source()))) {
+        Ok((values, name, source)) => {
+            println!("  {name} via {source}\n  {}", format_values(&values))
+        }
+        Err(e) => println!("  unavailable: {e}"),
+    }
     Ok(())
+}
+
+/// `45 °C, 12 %, 35 W, 1530 MHz`, with `-` for missing values.
+fn format_values(v: &Values) -> String {
+    let field = |value: Option<f32>, unit: &str| {
+        value.map_or_else(|| format!("- {unit}"), |v| format!("{v:.0} {unit}"))
+    };
+    format!(
+        "{}, {}, {}, {}",
+        field(v.temp, "°C"),
+        field(v.usage, "%"),
+        field(v.power, "W"),
+        field(v.freq, "MHz")
+    )
 }
 
 #[cfg(windows)]
@@ -254,6 +280,16 @@ fn test_pattern() -> Result {
     let hot = test_readings(92.0, 100.0, 180.0, 5000.0);
     let update = test_update(temperature(92.0, Unit::Celsius), hot, Unit::Celsius, true);
     send("92 °C with alarm", Some(update), 4000)?;
+    let gpu = test_readings(41.0, 30.0, 60.0, 3600.0);
+    let update = Update {
+        component: Component::Gpu,
+        ..test_update(temperature(75.0, Unit::Celsius), gpu, Unit::Celsius, false)
+    };
+    send(
+        "GPU: 75 °C, 95 %, 210 W, 2400 MHz (source=gpu; CH series: lower section)",
+        Some(update),
+        3000,
+    )?;
     let eights = test_readings(888.0, 100.0, 888.0, 8888.0);
     let update = test_update(
         Reading::Usage { percent: 888.0 },
@@ -266,18 +302,27 @@ fn test_pattern() -> Result {
     Ok(())
 }
 
+/// CPU values, plus GPU values that differ from them so both sections and pages are told apart
+/// (the GPU section reads 75 °C, 95 %, 210 W and 2400 MHz in the GPU step).
 fn test_readings(celsius: f32, usage: f32, watts: f32, mhz: f32) -> Readings {
     Readings {
         cpu_temp: Some(celsius),
         cpu_usage: usage,
         cpu_power: Some(watts),
         cpu_freq: Some(mhz),
+        gpu: Values {
+            temp: Some((celsius + 34.0).min(999.0)),
+            usage: Some((usage + 65.0).min(100.0)),
+            power: Some(watts + 150.0),
+            freq: Some((mhz * 2.0 / 3.0).round()),
+        },
     }
 }
 
 fn test_update(reading: Reading, readings: Readings, unit: Unit, alarm: bool) -> Update {
     Update {
         reading,
+        component: Component::Cpu,
         readings,
         unit,
         alarm,
@@ -518,6 +563,12 @@ fn status() -> Result {
     }
     if let Some(f) = s.cpu_freq {
         println!("Frequency    {f:.0} MHz");
+    }
+    if let Some(name) = &s.gpu_name {
+        println!("GPU          {name}: {}", format_values(&s.gpu));
+    }
+    if s.component == Some(Component::Gpu) {
+        println!("Showing      GPU");
     }
     println!();
     for (key, value) in s.config.entries() {

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::{env, mem, ptr};
 
 use crate::{autostart, icon, window};
-use coolercast_core::config::{Mode, Unit};
+use coolercast_core::config::{Mode, Source, Unit};
 use coolercast_core::ipc::{self, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{
@@ -45,6 +45,9 @@ const ID_MODE_USAGE: usize = 101;
 const ID_MODE_AUTO: usize = 102;
 const ID_MODE_CUSTOM: usize = 103;
 const ID_MODE_POWER: usize = 104;
+const ID_SOURCE_CPU: usize = 140;
+const ID_SOURCE_GPU: usize = 141;
+const ID_SOURCE_AUTO: usize = 142;
 const ID_UNIT_CELSIUS: usize = 110;
 const ID_UNIT_FAHRENHEIT: usize = 111;
 const ID_ALARM: usize = 120;
@@ -358,6 +361,22 @@ fn show_menu(hwnd: HWND) {
         );
         AppendMenuW(menu, MF_POPUP, modes as usize, wide("Display").as_ptr());
 
+        let sources = CreatePopupMenu();
+        for (id, label, source) in [
+            (ID_SOURCE_CPU, "CPU", Source::Cpu),
+            (ID_SOURCE_GPU, "GPU", Source::Gpu),
+            (ID_SOURCE_AUTO, "Alternate", Source::Auto),
+        ] {
+            item(
+                sources,
+                id,
+                label,
+                online && config.source == source,
+                online,
+            );
+        }
+        AppendMenuW(menu, MF_POPUP, sources as usize, wide("Device").as_ptr());
+
         let units = CreatePopupMenu();
         item(
             units,
@@ -406,6 +425,9 @@ fn show_menu(hwnd: HWND) {
         ID_MODE_AUTO => Some(("mode", "auto")),
         ID_MODE_CUSTOM => Some(("mode", "custom")),
         ID_MODE_POWER => Some(("mode", "power")),
+        ID_SOURCE_CPU => Some(("source", "cpu")),
+        ID_SOURCE_GPU => Some(("source", "gpu")),
+        ID_SOURCE_AUTO => Some(("source", "auto")),
         ID_UNIT_CELSIUS => Some(("unit", "celsius")),
         ID_UNIT_FAHRENHEIT => Some(("unit", "fahrenheit")),
         ID_ALARM => Some(("alarm", if alarm { "off" } else { "on" })),
