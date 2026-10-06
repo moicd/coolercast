@@ -2,20 +2,23 @@
 
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::os::windows::io::AsRawHandle;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use coolercast_core::win;
-use coolercast_core::{error, info, log, paths};
+use coolercast_core::{error, info, log, paths, warn};
 use windows_service::service::{
-    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
-    ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
-    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+    DisplayState, PowerBroadcastSetting, PowerEventParam, ServiceAccess, ServiceAction,
+    ServiceActionType, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+    ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
+    ServiceStatus, ServiceType, SessionChangeReason,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
+use windows_sys::Win32::System::Power::RegisterPowerSettingNotification;
 
 use crate::Result;
 
@@ -26,6 +29,11 @@ const DESCRIPTION: &str = "Shows CPU temperature and usage on DeepCool cooler di
 const ERROR_ACCESS_DENIED: i32 = 5;
 const ERROR_SERVICE_EXISTS: i32 = 1073;
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+
+/// `GUID_CONSOLE_DISPLAY_STATE`: the console screen turned on, off or dimmed.
+const GUID_CONSOLE_DISPLAY_STATE: windows_sys::core::GUID =
+    windows_sys::core::GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+const DEVICE_NOTIFY_SERVICE_HANDLE: u32 = 1;
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -57,8 +65,38 @@ fn run_service() -> Result {
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        ServiceControl::SessionChange(change) => {
+            match change.reason {
+                SessionChangeReason::SessionLock => handler_engine.set_locked(true),
+                SessionChangeReason::SessionUnlock => handler_engine.set_locked(false),
+                _ => {}
+            }
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::PowerEvent(PowerEventParam::PowerSettingChange(
+            PowerBroadcastSetting::ConsoleDisplayState(state),
+        )) => {
+            // Dimmed still shows something: only off counts.
+            handler_engine.set_screen_off(state == DisplayState::Off);
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::PowerEvent(_) => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     })?;
+    // user32 is already loaded through setupapi, so this costs nothing extra.
+    let notification = unsafe {
+        RegisterPowerSettingNotification(
+            status.as_raw_handle(),
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_SERVICE_HANDLE,
+        )
+    };
+    if notification == 0 {
+        warn!(
+            "screen state notifications unavailable: {}",
+            std::io::Error::last_os_error()
+        );
+    }
     let report = |state, controls_accepted| {
         status.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -72,7 +110,10 @@ fn run_service() -> Result {
     };
     report(
         ServiceState::Running,
-        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        ServiceControlAccept::STOP
+            | ServiceControlAccept::SHUTDOWN
+            | ServiceControlAccept::SESSION_CHANGE
+            | ServiceControlAccept::POWER_EVENT,
     )?;
 
     engine.run();

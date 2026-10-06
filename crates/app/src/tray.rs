@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::{env, mem, ptr};
 
 use crate::{autostart, icon, window};
-use coolercast_core::config::{Mode, Source, Unit};
+use coolercast_core::config::{Bar, Mode, Source, Unit};
 use coolercast_core::ipc::{self, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{
@@ -48,6 +48,11 @@ const ID_MODE_POWER: usize = 104;
 const ID_SOURCE_CPU: usize = 140;
 const ID_SOURCE_GPU: usize = 141;
 const ID_SOURCE_AUTO: usize = 142;
+const ID_SOURCE_SMART: usize = 143;
+const ID_USAGE_BAR: usize = 150;
+const ID_OFF_LOCKED: usize = 160;
+const ID_OFF_SCREEN: usize = 161;
+const ID_OFF_NIGHT: usize = 162;
 const ID_UNIT_CELSIUS: usize = 110;
 const ID_UNIT_FAHRENHEIT: usize = 111;
 const ID_ALARM: usize = 120;
@@ -366,6 +371,11 @@ fn show_menu(hwnd: HWND) {
             (ID_SOURCE_CPU, "CPU", Source::Cpu),
             (ID_SOURCE_GPU, "GPU", Source::Gpu),
             (ID_SOURCE_AUTO, "Alternate", Source::Auto),
+            (
+                ID_SOURCE_SMART,
+                "GPU while busy, CPU otherwise",
+                Source::Smart,
+            ),
         ] {
             item(
                 sources,
@@ -393,6 +403,37 @@ fn show_menu(hwnd: HWND) {
             online,
         );
         AppendMenuW(menu, MF_POPUP, units as usize, wide("Unit").as_ptr());
+        item(
+            menu,
+            ID_USAGE_BAR,
+            "Bar shows usage",
+            online && config.bar == Bar::Usage,
+            online,
+        );
+
+        let off = CreatePopupMenu();
+        let night = format!("At night ({}–{})", config.night_start, config.night_end);
+        for (id, label, on) in [
+            (
+                ID_OFF_LOCKED,
+                "When the PC is locked",
+                config.off_when_locked,
+            ),
+            (
+                ID_OFF_SCREEN,
+                "When the screen turns off",
+                config.off_when_screen_off,
+            ),
+            (ID_OFF_NIGHT, night.as_str(), config.off_at_night),
+        ] {
+            item(off, id, label, online && on, online);
+        }
+        AppendMenuW(
+            menu,
+            MF_POPUP,
+            off as usize,
+            wide("Turn display off").as_ptr(),
+        );
 
         let alarm_label = format!("Alarm at {} °C", config.alarm_threshold);
         item(menu, ID_ALARM, &alarm_label, online && config.alarm, online);
@@ -418,7 +459,11 @@ fn show_menu(hwnd: HWND) {
     };
     set_interactive(window::is_open());
 
-    let alarm = status.as_ref().is_some_and(|s| s.config.alarm);
+    let config = status
+        .as_ref()
+        .map(|s| s.config.clone())
+        .unwrap_or_default();
+    let toggle = |on: bool| if on { "off" } else { "on" };
     let setting = match command {
         ID_MODE_TEMPERATURE => Some(("mode", "temperature")),
         ID_MODE_USAGE => Some(("mode", "usage")),
@@ -428,9 +473,21 @@ fn show_menu(hwnd: HWND) {
         ID_SOURCE_CPU => Some(("source", "cpu")),
         ID_SOURCE_GPU => Some(("source", "gpu")),
         ID_SOURCE_AUTO => Some(("source", "auto")),
+        ID_SOURCE_SMART => Some(("source", "smart")),
+        ID_USAGE_BAR => Some((
+            "bar",
+            if config.bar == Bar::Usage {
+                "value"
+            } else {
+                "usage"
+            },
+        )),
+        ID_OFF_LOCKED => Some(("off_when_locked", toggle(config.off_when_locked))),
+        ID_OFF_SCREEN => Some(("off_when_screen_off", toggle(config.off_when_screen_off))),
+        ID_OFF_NIGHT => Some(("off_at_night", toggle(config.off_at_night))),
         ID_UNIT_CELSIUS => Some(("unit", "celsius")),
         ID_UNIT_FAHRENHEIT => Some(("unit", "fahrenheit")),
-        ID_ALARM => Some(("alarm", if alarm { "off" } else { "on" })),
+        ID_ALARM => Some(("alarm", toggle(config.alarm))),
         ID_SETTINGS => {
             window::open();
             None

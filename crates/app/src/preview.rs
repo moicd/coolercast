@@ -1,7 +1,7 @@
 //! Simulated AK series display: three seven-segment digits, the unit symbols and the 10-step
 //! bar, lit the same way as the real one.
 
-use coolercast_core::config::{Config, Symbol, Unit};
+use coolercast_core::config::{Bar, Config, Symbol, Unit};
 use coolercast_core::device::{self, Component, Family, ak};
 use coolercast_core::ipc::{Shown, Status};
 
@@ -53,6 +53,11 @@ impl Frame {
                 (usage, usage, Symbol::Percent)
             }
         };
+        // With the usage bar, a temperature comes with the usage of the same component.
+        let bar = match (status.config.bar, symbol, usage) {
+            (Bar::Usage, Symbol::Celsius | Symbol::Fahrenheit, Some(usage)) => usage,
+            _ => bar,
+        };
         Some(Self::new(
             ak::display_value(value),
             symbol,
@@ -94,38 +99,36 @@ const DIGIT_SEGMENTS: [u8; 10] = [
     0b1111111, 0b1101111,
 ];
 
+/// Size the layout below is drawn at; other sizes scale it.
+const BASE_W: f32 = 184.0;
+
+/// Draws the display in `area`, scaled to its width.
 pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
-    c.fill_round_rect(area, 10.0, PANEL);
+    let k = area.w / BASE_W;
+    let radius = 10.0 * k;
+    c.fill_round_rect(area, radius, PANEL);
     // Reflection on the cover glass, over the top of the panel.
     let white = Color::rgb(0xFF, 0xFF, 0xFF);
     let sheen = Rect::new(area.x, area.y, area.w, area.h * 0.5);
-    c.fill_round_rect_v(sheen, 10.0, white.alpha(0x14), white.alpha(0x00));
+    c.fill_round_rect_v(sheen, radius, white.alpha(0x14), white.alpha(0x00));
 
-    let digit_w = 30.0;
-    let digit_h = 54.0;
-    let gap = 10.0;
-    let symbols_w = 40.0;
-    let total_w = 3.0 * digit_w + 2.0 * gap + 16.0 + symbols_w;
+    let digit_w = 30.0 * k;
+    let digit_h = 54.0 * k;
+    let gap = 10.0 * k;
+    let symbols_w = 40.0 * k;
+    let total_w = 3.0 * digit_w + 2.0 * gap + 16.0 * k + symbols_w;
     let x0 = area.x + (area.w - total_w) / 2.0;
-    let y0 = area.y + 16.0;
+    let y0 = area.y + 16.0 * k;
 
-    let lit = |on: bool| if on { LIT } else { UNLIT };
     for i in 0..3 {
         let digit = frame.and_then(|f| f.digits[i]);
         let mask = digit.map_or(0, |d| DIGIT_SEGMENTS[d as usize]);
-        draw_digit(
-            c,
-            x0 + i as f32 * (digit_w + gap),
-            y0,
-            digit_w,
-            digit_h,
-            mask,
-            lit,
-        );
+        let x = x0 + i as f32 * (digit_w + gap);
+        draw_digit(c, x, y0, digit_w, digit_h, k, mask);
     }
 
     // Unit symbols, stacked next to the digits.
-    let sx = x0 + 3.0 * digit_w + 2.0 * gap + 16.0;
+    let sx = x0 + 3.0 * digit_w + 2.0 * gap + 16.0 * k;
     let symbol = frame.map(|f| f.symbol);
     for (i, (label, s)) in [
         ("°C", Symbol::Celsius),
@@ -135,37 +138,65 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     .into_iter()
     .enumerate()
     {
-        let r = Rect::new(sx, y0 + i as f32 * 18.0, symbols_w, 18.0);
-        c.text(
-            label,
-            r,
-            14.0,
-            Weight::Semibold,
-            lit(symbol == Some(s)),
-            Align::Left,
-        );
+        let r = Rect::new(sx, y0 + i as f32 * 18.0 * k, symbols_w, 18.0 * k);
+        let on = symbol == Some(s);
+        if on {
+            glow_text(c, label, r, 14.0 * k, k);
+        }
+        let color = if on { LIT } else { UNLIT };
+        c.text(label, r, 14.0 * k, Weight::Semibold, color, Align::Left);
     }
 
     // Bar: ten segments under the digits, red while the alarm is on.
     let alarm = frame.is_some_and(|f| f.alarm);
     let level = frame.map_or(0, |f| f.bar);
-    let bar_y = y0 + digit_h + 16.0;
-    let seg_gap = 4.0;
+    let bar_y = y0 + digit_h + 16.0 * k;
+    let seg_gap = 4.0 * k;
     let seg_w = (total_w - 9.0 * seg_gap) / 10.0;
     for i in 0..10u8 {
-        let on = i < level;
-        let color = match (on, alarm) {
+        let r = Rect::new(x0 + f32::from(i) * (seg_w + seg_gap), bar_y, seg_w, 8.0 * k);
+        let color = match (i < level, alarm) {
             (true, true) => ALARM,
             (true, false) => LIT,
-            _ => UNLIT,
+            _ => {
+                c.fill_round_rect(r, 2.0 * k, UNLIT);
+                continue;
+            }
         };
-        let r = Rect::new(x0 + f32::from(i) * (seg_w + seg_gap), bar_y, seg_w, 8.0);
-        c.fill_round_rect(r, 2.0, color);
+        c.fill_round_rect(r.inset(-2.5 * k, -2.5 * k), 4.0 * k, color.alpha(0x1C));
+        c.fill_round_rect(r, 2.0 * k, color);
     }
 }
 
-fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, mask: u8, lit: impl Fn(bool) -> Color) {
-    let t = 5.0; // segment thickness
+/// A soft halo behind lit text, like the light bleeding through the cover.
+fn glow_text(c: &Canvas, text: &str, r: Rect, size: f32, k: f32) {
+    for (dx, dy) in HALO {
+        let shifted = Rect::new(r.x + dx * k, r.y + dy * k, r.w, r.h);
+        c.text(
+            text,
+            shifted,
+            size,
+            Weight::Semibold,
+            LIT.alpha(0x1A),
+            Align::Left,
+        );
+    }
+}
+
+/// Offsets of the copies that make up a glow.
+const HALO: [(f32, f32); 8] = [
+    (-1.6, 0.0),
+    (1.6, 0.0),
+    (0.0, -1.6),
+    (0.0, 1.6),
+    (-1.1, -1.1),
+    (1.1, -1.1),
+    (-1.1, 1.1),
+    (1.1, 1.1),
+];
+
+fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
+    let t = 5.0 * k; // segment thickness
     let half = h / 2.0;
     // Horizontal and vertical segments as hexagons.
     let hseg = |sx: f32, sy: f32| {
@@ -198,7 +229,18 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, mask: u8, lit: impl Fn
         hseg(x, y + half),           // g
     ];
     for (i, points) in segments.iter().enumerate() {
-        c.fill_polygon(points, lit(mask & (1 << i) != 0));
+        if mask & (1 << i) == 0 {
+            c.fill_polygon(points, UNLIT);
+            continue;
+        }
+        for (dx, dy) in HALO {
+            let shifted: Vec<_> = points
+                .iter()
+                .map(|&(px, py)| (px + dx * k, py + dy * k))
+                .collect();
+            c.fill_polygon(&shifted, LIT.alpha(0x16));
+        }
+        c.fill_polygon(points, LIT);
     }
 }
 
@@ -271,6 +313,14 @@ mod tests {
         s.gpu.temp = Some(71.2);
         let f = Frame::from_status(&s).unwrap();
         assert_eq!(f.digits, [None, Some(7), Some(1)]);
+    }
+
+    #[test]
+    fn usage_bar_with_the_temperature() {
+        let mut s = status(Shown::Temperature, 47.6, 23.0);
+        s.config.bar = Bar::Usage;
+        let f = Frame::from_status(&s).unwrap();
+        assert_eq!((f.digits, f.bar), ([None, Some(4), Some(8)], 2));
     }
 
     #[test]

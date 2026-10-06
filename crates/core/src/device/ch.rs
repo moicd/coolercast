@@ -78,6 +78,7 @@ mod tests {
             },
             unit: Unit::Celsius,
             alarm: false,
+            usage_bar: false,
         }
     }
 

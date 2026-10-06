@@ -67,6 +67,48 @@ pub enum Source {
     Gpu,
     /// Alternates between the CPU and the GPU.
     Auto,
+    /// The GPU while it is busy (gaming), the CPU otherwise.
+    Smart,
+}
+
+/// What the bar of single-value displays shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Bar {
+    /// Follows the number on the display.
+    #[default]
+    Value,
+    /// The usage of the component shown, so a temperature and a usage are visible at once.
+    Usage,
+}
+
+/// A time of day in minutes since midnight, written `HH:MM`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ClockTime(u16);
+
+impl ClockTime {
+    pub const fn new(hour: u16, minute: u16) -> Self {
+        Self(hour * 60 + minute)
+    }
+
+    pub fn from_minutes(minutes: u16) -> Self {
+        Self(minutes % (24 * 60))
+    }
+
+    pub fn minutes(self) -> u16 {
+        self.0
+    }
+
+    /// Whether `now` falls in `[start, end)`, which may wrap past midnight. An empty range
+    /// (`start == end`) contains nothing.
+    pub fn in_range(now: Self, start: Self, end: Self) -> bool {
+        if start <= end {
+            start <= now && now < end
+        } else {
+            now >= start || now < end
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,6 +116,7 @@ pub enum Source {
 pub struct Config {
     pub mode: Mode,
     pub source: Source,
+    pub bar: Bar,
     pub unit: Unit,
     /// Blink the display when the CPU reaches `alarm_threshold`.
     pub alarm: bool,
@@ -89,6 +132,16 @@ pub struct Config {
     pub custom_symbol: Symbol,
     /// Bar level in `custom` mode.
     pub custom_bar: u8,
+    /// Turn the display off while the session is locked (Windows).
+    pub off_when_locked: bool,
+    /// Turn the display off while the PC screen is off (Windows).
+    pub off_when_screen_off: bool,
+    /// Turn the display off every night between `night_start` and `night_end`.
+    pub off_at_night: bool,
+    /// Local time.
+    pub night_start: ClockTime,
+    /// Local time.
+    pub night_end: ClockTime,
 }
 
 impl Default for Config {
@@ -96,6 +149,7 @@ impl Default for Config {
         Self {
             mode: Mode::Temperature,
             source: Source::Cpu,
+            bar: Bar::Value,
             unit: Unit::Celsius,
             alarm: true,
             alarm_threshold: 90,
@@ -104,6 +158,11 @@ impl Default for Config {
             custom_value: 0,
             custom_symbol: Symbol::Celsius,
             custom_bar: 1,
+            off_when_locked: false,
+            off_when_screen_off: false,
+            off_at_night: false,
+            night_start: ClockTime::new(23, 0),
+            night_end: ClockTime::new(7, 0),
         }
     }
 }
@@ -155,9 +214,13 @@ impl Config {
              # \"power\" (LS series; other displays show the temperature) or \"custom\" (the\n\
              # custom_* values below). Displays that show several values at once ignore it.\n\
              mode = \"{mode}\"\n\
-             # Component shown: \"cpu\", \"gpu\" or \"auto\" (alternates both every\n\
-             # auto_interval_s). CH series cases always show both.\n\
+             # Component shown: \"cpu\", \"gpu\", \"auto\" (alternates both every\n\
+             # auto_interval_s) or \"smart\" (the GPU while it is busy, the CPU otherwise).\n\
+             # CH series cases always show both.\n\
              source = \"{source}\"\n\
+             # Bar: \"value\" (follows the number shown) or \"usage\" (the usage of the component\n\
+             # shown, so AK displays show its temperature and usage at once).\n\
+             bar = \"{bar}\"\n\
              # Temperature unit: \"celsius\" or \"fahrenheit\".\n\
              unit = \"{unit}\"\n\
              # Blink the display when the CPU reaches alarm_threshold (°C, {a_min}-{a_max}).\n\
@@ -172,9 +235,18 @@ impl Config {
              # \"fahrenheit\" or \"percent\") and the bar level ({b_min}-{b_max}).\n\
              custom_value = {custom_value}\n\
              custom_symbol = \"{custom_symbol}\"\n\
-             custom_bar = {custom_bar}\n",
+             custom_bar = {custom_bar}\n\
+             \n\
+             # Turn the display off while the PC is locked or its screen is off (Windows only),\n\
+             # or every night from night_start to night_end (\"HH:MM\", local time).\n\
+             off_when_locked = {off_when_locked}\n\
+             off_when_screen_off = {off_when_screen_off}\n\
+             off_at_night = {off_at_night}\n\
+             night_start = \"{night_start}\"\n\
+             night_end = \"{night_end}\"\n",
             mode = self.mode,
             source = self.source,
+            bar = self.bar,
             unit = self.unit,
             alarm = self.alarm,
             threshold = self.alarm_threshold,
@@ -183,6 +255,11 @@ impl Config {
             custom_value = self.custom_value,
             custom_symbol = self.custom_symbol,
             custom_bar = self.custom_bar,
+            off_when_locked = self.off_when_locked,
+            off_when_screen_off = self.off_when_screen_off,
+            off_at_night = self.off_at_night,
+            night_start = self.night_start,
+            night_end = self.night_end,
             a_min = ALARM_THRESHOLD.0,
             a_max = ALARM_THRESHOLD.1,
             i_min = INTERVAL_MS.0,
@@ -211,33 +288,42 @@ impl Config {
             Ok(n)
         }
 
+        fn boolean(value: &str) -> Result<bool, String> {
+            match value {
+                "true" | "on" | "1" => Ok(true),
+                "false" | "off" | "0" => Ok(false),
+                _ => Err(format!("'{value}' is not a boolean")),
+            }
+        }
+
         match key {
             "mode" => self.mode = value.parse()?,
             "source" => self.source = value.parse()?,
+            "bar" => self.bar = value.parse()?,
             "unit" => self.unit = value.parse()?,
-            "alarm" => {
-                self.alarm = match value {
-                    "true" | "on" | "1" => true,
-                    "false" | "off" | "0" => false,
-                    _ => return Err(format!("'{value}' is not a boolean")),
-                }
-            }
+            "alarm" => self.alarm = boolean(value)?,
             "alarm_threshold" => self.alarm_threshold = num(value, ALARM_THRESHOLD)?,
             "interval_ms" => self.interval_ms = num(value, INTERVAL_MS)?,
             "auto_interval_s" => self.auto_interval_s = num(value, AUTO_INTERVAL_S)?,
             "custom_value" => self.custom_value = num(value, CUSTOM_VALUE)?,
             "custom_symbol" => self.custom_symbol = value.parse()?,
             "custom_bar" => self.custom_bar = num(value, CUSTOM_BAR)?,
+            "off_when_locked" => self.off_when_locked = boolean(value)?,
+            "off_when_screen_off" => self.off_when_screen_off = boolean(value)?,
+            "off_at_night" => self.off_at_night = boolean(value)?,
+            "night_start" => self.night_start = value.parse()?,
+            "night_end" => self.night_end = value.parse()?,
             _ => return Err(format!("unknown setting '{key}'")),
         }
         Ok(())
     }
 
     /// `(key, value)` pairs in the same text form accepted by [`Config::set`].
-    pub fn entries(&self) -> [(&'static str, String); 10] {
+    pub fn entries(&self) -> [(&'static str, String); 16] {
         [
             ("mode", self.mode.to_string()),
             ("source", self.source.to_string()),
+            ("bar", self.bar.to_string()),
             ("unit", self.unit.to_string()),
             ("alarm", self.alarm.to_string()),
             ("alarm_threshold", self.alarm_threshold.to_string()),
@@ -246,6 +332,11 @@ impl Config {
             ("custom_value", self.custom_value.to_string()),
             ("custom_symbol", self.custom_symbol.to_string()),
             ("custom_bar", self.custom_bar.to_string()),
+            ("off_when_locked", self.off_when_locked.to_string()),
+            ("off_when_screen_off", self.off_when_screen_off.to_string()),
+            ("off_at_night", self.off_at_night.to_string()),
+            ("night_start", self.night_start.to_string()),
+            ("night_end", self.night_end.to_string()),
         ]
     }
 
@@ -298,6 +389,7 @@ impl fmt::Display for Source {
             Source::Cpu => "cpu",
             Source::Gpu => "gpu",
             Source::Auto => "auto",
+            Source::Smart => "smart",
         })
     }
 }
@@ -310,8 +402,67 @@ impl FromStr for Source {
             "cpu" => Ok(Source::Cpu),
             "gpu" => Ok(Source::Gpu),
             "auto" => Ok(Source::Auto),
-            _ => Err(format!("unknown source '{s}' (expected cpu, gpu or auto)")),
+            "smart" => Ok(Source::Smart),
+            _ => Err(format!(
+                "unknown source '{s}' (expected cpu, gpu, auto or smart)"
+            )),
         }
+    }
+}
+
+impl fmt::Display for Bar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Bar::Value => "value",
+            Bar::Usage => "usage",
+        })
+    }
+}
+
+impl FromStr for Bar {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "value" => Ok(Bar::Value),
+            "usage" => Ok(Bar::Usage),
+            _ => Err(format!("unknown bar '{s}' (expected value or usage)")),
+        }
+    }
+}
+
+impl fmt::Display for ClockTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}", self.0 / 60, self.0 % 60)
+    }
+}
+
+impl FromStr for ClockTime {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let invalid = || format!("'{s}' is not a time (expected HH:MM)");
+        let (hour, minute) = s.split_once(':').ok_or_else(invalid)?;
+        let hour: u16 = hour.parse().map_err(|_| invalid())?;
+        let minute: u16 = minute.parse().map_err(|_| invalid())?;
+        if hour > 23 || minute > 59 || s.len() > 5 {
+            return Err(invalid());
+        }
+        Ok(Self::new(hour, minute))
+    }
+}
+
+impl TryFrom<String> for ClockTime {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, String> {
+        s.parse()
+    }
+}
+
+impl From<ClockTime> for String {
+    fn from(time: ClockTime) -> Self {
+        time.to_string()
     }
 }
 
@@ -372,6 +523,7 @@ mod tests {
         let config = Config {
             mode: Mode::Auto,
             source: Source::Gpu,
+            bar: Bar::Usage,
             unit: Unit::Fahrenheit,
             alarm: false,
             alarm_threshold: 85,
@@ -380,6 +532,11 @@ mod tests {
             custom_value: 123,
             custom_symbol: Symbol::Percent,
             custom_bar: 7,
+            off_when_locked: true,
+            off_when_screen_off: true,
+            off_at_night: true,
+            night_start: ClockTime::new(22, 30),
+            night_end: ClockTime::new(6, 45),
         };
         assert_eq!(Config::parse(&config.to_toml()).unwrap(), config);
         assert_eq!(
@@ -437,9 +594,15 @@ mod tests {
         let mut config = Config::default();
         config.set("mode", "power").unwrap();
         assert_eq!(config.mode, Mode::Power);
-        config.set("source", "auto").unwrap();
-        assert_eq!(config.source, Source::Auto);
+        config.set("source", "smart").unwrap();
+        assert_eq!(config.source, Source::Smart);
         assert!(config.set("source", "psu").is_err());
+        config.set("bar", "usage").unwrap();
+        assert_eq!(config.bar, Bar::Usage);
+        config.set("off_at_night", "on").unwrap();
+        config.set("night_start", "22:15").unwrap();
+        assert_eq!(config.night_start, ClockTime::new(22, 15));
+        assert!(config.set("night_end", "24:00").is_err());
         config.set("mode", "usage").unwrap();
         config.set("unit", "f").unwrap();
         config.set("alarm", "off").unwrap();
@@ -460,6 +623,8 @@ mod tests {
         let source = Config {
             mode: Mode::Auto,
             source: Source::Gpu,
+            off_at_night: true,
+            night_end: ClockTime::new(8, 0),
             alarm_threshold: 70,
             ..Config::default()
         };
@@ -468,5 +633,30 @@ mod tests {
             copy.set(key, &value).unwrap();
         }
         assert_eq!(copy, source);
+    }
+
+    #[test]
+    fn clock_times() {
+        assert_eq!("07:05".parse(), Ok(ClockTime::new(7, 5)));
+        assert_eq!("7:05".parse(), Ok(ClockTime::new(7, 5)));
+        assert_eq!(ClockTime::new(23, 0).to_string(), "23:00");
+        for bad in ["24:00", "12:60", "12", "ab:cd", "12:000"] {
+            assert!(bad.parse::<ClockTime>().is_err(), "{bad}");
+        }
+        assert_eq!(ClockTime::from_minutes(24 * 60 + 5), ClockTime::new(0, 5));
+    }
+
+    #[test]
+    fn night_ranges_wrap_past_midnight() {
+        let t = ClockTime::new;
+        let night = |now| ClockTime::in_range(now, t(23, 0), t(7, 0));
+        assert!(night(t(23, 0)));
+        assert!(night(t(2, 30)));
+        assert!(!night(t(7, 0)));
+        assert!(!night(t(12, 0)));
+        let afternoon = |now| ClockTime::in_range(now, t(13, 0), t(15, 0));
+        assert!(afternoon(t(14, 0)));
+        assert!(!afternoon(t(15, 0)));
+        assert!(!ClockTime::in_range(t(5, 0), t(5, 0), t(5, 0)));
     }
 }

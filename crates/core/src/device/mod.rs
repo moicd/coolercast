@@ -247,6 +247,8 @@ pub struct Update {
     pub readings: Readings,
     pub unit: Unit,
     pub alarm: bool,
+    /// Single-value displays show the usage on their bar instead of following the number.
+    pub usage_bar: bool,
 }
 
 impl Update {
@@ -279,6 +281,18 @@ impl Update {
             },
         }
     }
+}
+
+/// An AK series report; with [`Update::usage_bar`], a temperature or power comes with the usage
+/// of the same component on the bar.
+fn ak_packet(report_id: u8, update: &Update) -> ak::Packet {
+    let reading = update.reading_for(Family::AkSeries);
+    let mut packet = ak::packet(report_id, reading, update.alarm);
+    if update.usage_bar && matches!(reading, Reading::Temperature { .. } | Reading::Power { .. }) {
+        let usage = update.readings.of(update.component).usage;
+        packet[2] = ak::bar_level(usage.unwrap_or(update.readings.cpu_usage));
+    }
+    packet
 }
 
 /// An opened, supported cooler.
@@ -342,7 +356,7 @@ impl Cooler {
         let telemetry = || framed::Telemetry::new(&update.readings, update.unit);
         let shown = update.readings.of(update.component);
         let packet = match family {
-            Family::AkSeries => ak::packet(id, update.reading_for(family), update.alarm),
+            Family::AkSeries => ak_packet(id, update),
             Family::AgSeries => ag::packet(id, update.reading_for(family), update.alarm),
             Family::LsSeries => ls::packet(
                 id,
@@ -390,6 +404,7 @@ mod tests {
             readings,
             unit: Unit::Celsius,
             alarm: false,
+            usage_bar: false,
         }
     }
 
@@ -503,5 +518,29 @@ mod tests {
         assert!(Family::AkSeries.uses_gpu(Source::Auto));
         assert!(Family::ChGen2.uses_gpu(Source::Gpu));
         assert!(!Family::LqSeries.uses_gpu(Source::Gpu));
+    }
+
+    #[test]
+    fn usage_bar_on_ak_displays() {
+        // 50 °C would light 5 steps; the CPU usage of 20 % lights 2.
+        let plain = update(TEMP, SENSORS);
+        assert_eq!(ak_packet(16, &plain)[1..3], [19, 5]);
+        let usage_bar = Update {
+            usage_bar: true,
+            ..plain
+        };
+        assert_eq!(ak_packet(16, &usage_bar)[1..3], [19, 2]);
+        // The GPU's own usage (90 %) when the GPU is shown.
+        let gpu = Update {
+            component: Component::Gpu,
+            ..usage_bar
+        };
+        assert_eq!(ak_packet(16, &gpu)[2], 9);
+        // A usage reading keeps its own bar.
+        let usage = Update {
+            reading: Reading::Usage { percent: 20.0 },
+            ..usage_bar
+        };
+        assert_eq!(ak_packet(16, &usage)[2], 2);
     }
 }
