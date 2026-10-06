@@ -9,6 +9,7 @@
 //! The window only exists while it is open; closing it releases GDI+ and every drawing resource,
 //! so the tray icon alone stays as small as before.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::sync::Mutex;
 use std::{mem, ptr, thread};
@@ -49,6 +50,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::autostart;
 use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight};
+use crate::i18n::{self, LANGS, Lang, Strings, fill};
 use crate::preview::{self, Frame};
 use crate::theme::{self, Theme};
 use crate::update::{self, Check};
@@ -76,6 +78,12 @@ const NAV_H: f32 = 40.0;
 const SETTING_H: f32 = 64.0;
 const SETTING_GAP: f32 = 6.0;
 const RADIUS: f32 = 8.0;
+const MENU_ITEM_H: f32 = 32.0;
+const MENU_PAD: f32 = 6.0;
+
+// Glyphs of the Windows icon font.
+const CHEVRON_DOWN: &str = "\u{E70D}";
+const CHECK_MARK: &str = "\u{E73E}";
 
 /// Stepper changes are sent once the value stops changing for this long.
 const TIMER_COMMIT: usize = 1;
@@ -108,14 +116,14 @@ const PAGES: [Page; 6] = [
 ];
 
 impl Page {
-    fn title(self) -> &'static str {
+    fn title(self, s: &Strings) -> &'static str {
         match self {
-            Page::Overview => "Overview",
-            Page::Display => "Display",
-            Page::Custom => "Custom value",
-            Page::TurnOff => "Display off",
-            Page::Alarm => "Alarm",
-            Page::General => "General",
+            Page::Overview => s.overview,
+            Page::Display => s.display,
+            Page::Custom => s.custom_value,
+            Page::TurnOff => s.display_off,
+            Page::Alarm => s.alarm,
+            Page::General => s.general,
         }
     }
 
@@ -132,102 +140,44 @@ impl Page {
     }
 
     /// One line under the page title.
-    fn subtitle(self) -> &'static str {
+    fn subtitle(self, s: &Strings) -> &'static str {
         match self {
-            Page::Overview => "What the cooler shows right now",
-            Page::Display => "What the display shows and how",
-            Page::Custom => "A fixed number, shown when Show is set to Custom",
-            Page::TurnOff => "Let the display go dark when nobody is looking",
-            Page::Alarm => "A warning when the processor gets too hot",
-            Page::General => "Startup and updates",
+            Page::Overview => s.overview_about,
+            Page::Display => s.display_about,
+            Page::Custom => s.custom_about,
+            Page::TurnOff => s.display_off_about,
+            Page::Alarm => s.alarm_about,
+            Page::General => s.general_about,
         }
     }
 
-    /// The setting cards of the page, in focus order: control, title and description.
-    fn settings(self) -> &'static [(Control, &'static str, &'static str)] {
+    /// The setting cards of the page, in focus order.
+    fn settings(self) -> &'static [Control] {
         match self {
             Page::Overview => &[],
             Page::Display => &[
-                (Control::Mode, "Show", "The value on the display"),
-                (
-                    Control::Source,
-                    "Device",
-                    "Processor, graphics card, both in turn, or the GPU while it is busy",
-                ),
-                (
-                    Control::AutoInterval,
-                    "Switch every",
-                    "How long each value stays when alternating",
-                ),
-                (Control::Unit, "Unit", "Temperature unit"),
-                (
-                    Control::Bar,
-                    "Bar shows the usage",
-                    "Temperature on the digits and usage on the bar, at the same time",
-                ),
-                (
-                    Control::Interval,
-                    "Refresh every",
-                    "How often the display is updated",
-                ),
+                Control::Mode,
+                Control::Source,
+                Control::AutoInterval,
+                Control::Unit,
+                Control::Bar,
+                Control::Interval,
             ],
             Page::Custom => &[
-                (
-                    Control::UseCustom,
-                    "Not shown right now",
-                    "The display shows this value when Show is set to Custom",
-                ),
-                (
-                    Control::CustomValue,
-                    "Number",
-                    "From 0 to 999: type it or use the buttons",
-                ),
-                (Control::CustomSymbol, "Symbol", "Lit next to the number"),
-                (Control::CustomBar, "Bar", "Lit steps of the bar"),
+                Control::UseCustom,
+                Control::CustomValue,
+                Control::CustomSymbol,
+                Control::CustomBar,
             ],
             Page::TurnOff => &[
-                (
-                    Control::OffLocked,
-                    "When the PC is locked",
-                    "While Windows shows the lock screen",
-                ),
-                (
-                    Control::OffScreen,
-                    "When the screen turns off",
-                    "Follows the monitors going to sleep",
-                ),
-                (
-                    Control::OffNight,
-                    "At night",
-                    "Every day, between two times",
-                ),
-                (Control::NightStart, "From", "Local time"),
-                (Control::NightEnd, "Until", "Local time"),
+                Control::OffLocked,
+                Control::OffScreen,
+                Control::OffNight,
+                Control::NightStart,
+                Control::NightEnd,
             ],
-            Page::Alarm => &[
-                (
-                    Control::Alarm,
-                    "Blink when hot",
-                    "The display blinks when the processor reaches the threshold",
-                ),
-                (
-                    Control::Threshold,
-                    "Threshold",
-                    "Processor temperature that sets off the alarm",
-                ),
-            ],
-            Page::General => &[
-                (
-                    Control::Autostart,
-                    "Start with Windows",
-                    "Keeps the CoolerCast icon in the notification area",
-                ),
-                (
-                    Control::Update,
-                    concat!("Version ", env!("CARGO_PKG_VERSION")),
-                    "Asks GitHub for the latest version, only when you click",
-                ),
-            ],
+            Page::Alarm => &[Control::Alarm, Control::Threshold],
+            Page::General => &[Control::Language, Control::Autostart, Control::Update],
         }
     }
 }
@@ -236,6 +186,7 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
     Nav(Page),
+    Language,
     Autostart,
     Update,
     /// Switches the display to the custom value.
@@ -283,7 +234,7 @@ fn focus_order(page: Page, config: &Config) -> Vec<Control> {
         .chain(
             page.settings()
                 .iter()
-                .map(|&(c, ..)| c)
+                .copied()
                 .filter(|c| c.visible(config)),
         )
         .collect()
@@ -292,7 +243,46 @@ fn focus_order(page: Page, config: &Config) -> Vec<Control> {
 impl Control {
     /// Whether the control can be used: the service settings need the service.
     fn enabled(self, _config: &Config, online: bool) -> bool {
-        matches!(self, Control::Nav(_) | Control::Autostart | Control::Update) || online
+        self.local() || online
+    }
+
+    /// Controls that work without the service: the window and the app settings.
+    fn local(self) -> bool {
+        matches!(
+            self,
+            Control::Nav(_) | Control::Language | Control::Autostart | Control::Update
+        )
+    }
+
+    /// Title and description of the setting card.
+    fn label(self, s: &Strings) -> (Cow<'static, str>, &'static str) {
+        let (title, about) = match self {
+            Control::Mode => (s.show, s.show_about),
+            Control::Source => (s.device, s.device_about),
+            Control::AutoInterval => (s.switch_every, s.switch_every_about),
+            Control::Unit => (s.unit, s.unit_about),
+            Control::Bar => (s.usage_bar, s.usage_bar_about),
+            Control::Interval => (s.refresh_every, s.refresh_every_about),
+            Control::UseCustom => (s.not_shown, s.not_shown_about),
+            Control::CustomValue => (s.number, s.number_about),
+            Control::CustomSymbol => (s.symbol, s.symbol_about),
+            Control::CustomBar => (s.bar, s.bar_about),
+            Control::OffLocked => (s.when_locked, s.when_locked_about),
+            Control::OffScreen => (s.when_screen_off, s.when_screen_off_about),
+            Control::OffNight => (s.at_night, s.at_night_about),
+            Control::NightStart => (s.from, s.local_time),
+            Control::NightEnd => (s.until, s.local_time),
+            Control::Alarm => (s.blink, s.blink_about),
+            Control::Threshold => (s.threshold, s.threshold_about),
+            Control::Language => (s.language, s.language_about),
+            Control::Autostart => (s.start_with_windows, s.start_with_windows_about),
+            Control::Update => {
+                let version = fill(s.version, &[env!("CARGO_PKG_VERSION")]);
+                return (Cow::Owned(version), s.version_about);
+            }
+            Control::Nav(page) => (page.title(s), ""),
+        };
+        (Cow::Borrowed(title), about)
     }
 
     /// Whether the card is shown: settings that only matter with another one are hidden
@@ -307,13 +297,13 @@ impl Control {
         }
     }
 
-    fn segments(self) -> &'static [&'static str] {
+    fn segments(self, s: &Strings) -> Vec<&'static str> {
         match self {
-            Control::Mode => &["Temperature", "Usage", "Alternate", "Custom"],
-            Control::Source => &["CPU", "GPU", "Alternate", "Smart"],
-            Control::Unit => &["°C", "°F"],
-            Control::CustomSymbol => &["°C", "°F", "%"],
-            _ => &[],
+            Control::Mode => vec![s.temperature, s.usage, s.alternate, s.custom],
+            Control::Source => vec!["CPU", "GPU", s.alternate, s.smart],
+            Control::Unit => vec!["°C", "°F"],
+            Control::CustomSymbol => vec!["°C", "°F", "%"],
+            _ => Vec::new(),
         }
     }
 
@@ -473,9 +463,11 @@ impl Control {
             Control::CustomValue => ("custom_value", config.custom_value.to_string()),
             Control::CustomSymbol => ("custom_symbol", config.custom_symbol.to_string()),
             Control::CustomBar => ("custom_bar", config.custom_bar.to_string()),
-            Control::Nav(_) | Control::Autostart | Control::Update | Control::UseCustom => {
-                return None;
-            }
+            Control::Nav(_)
+            | Control::Language
+            | Control::Autostart
+            | Control::Update
+            | Control::UseCustom => return None,
         })
     }
 }
@@ -546,23 +538,24 @@ fn next_focus(
         .find(|&c| enabled(c))
 }
 
-fn format_seconds(s: u32) -> String {
-    match (s / 60, s % 60) {
-        (0, s) => format!("{s} s"),
-        (m, 0) => format!("{m} min"),
-        (m, s) => format!("{m} min {s} s"),
+fn format_seconds(t: &Strings, secs: u32) -> String {
+    match (secs / 60, secs % 60) {
+        (0, s) => fill(t.seconds, &[&s.to_string()]),
+        (m, 0) => fill(t.minutes, &[&m.to_string()]),
+        (m, s) => fill(t.minutes_seconds, &[&m.to_string(), &s.to_string()]),
     }
 }
 
-fn format_ms(ms: u32) -> String {
+fn format_ms(t: &Strings, ms: u32) -> String {
     let s = ms as f32 / 1000.0;
-    if ms.is_multiple_of(1000) {
-        format!("{} s", ms / 1000)
+    let number = if ms.is_multiple_of(1000) {
+        (ms / 1000).to_string()
     } else if ms.is_multiple_of(100) {
-        format!("{s:.1} s")
+        format!("{s:.1}")
     } else {
-        format!("{s:.2} s")
-    }
+        format!("{s:.2}")
+    };
+    fill(t.seconds, &[&number.replace('.', t.decimal)])
 }
 
 fn format_temp(celsius: f32, unit: Unit) -> String {
@@ -577,27 +570,27 @@ enum Level {
 }
 
 /// The service state in two short lines for the sidebar.
-fn status_lines(status: Option<&Status>) -> (Level, String, String) {
+fn status_lines(status: Option<&Status>, t: &Strings) -> (Level, String, String) {
     let Some(s) = status else {
         return (
             Level::Error,
-            "Service not running".into(),
-            "Reinstall CoolerCast to start it".into(),
+            t.service_down.into(),
+            t.service_down_detail.into(),
         );
     };
     let devices = if s.devices.is_empty() {
-        "No cooler connected".to_owned()
+        t.no_cooler.to_owned()
     } else {
         s.devices.join(", ")
     };
     match (&s.temp_error, s.devices.is_empty()) {
         (Some(error), _) => (
             Level::Warn,
-            "Temperature unavailable".into(),
+            t.temperature_unavailable.into(),
             error.split(';').next().unwrap_or(error).to_owned(),
         ),
-        (None, true) => (Level::Warn, "Waiting for a cooler".into(), devices),
-        (None, false) => (Level::Ok, "Running".into(), devices),
+        (None, true) => (Level::Warn, t.waiting_for_cooler.into(), devices),
+        (None, false) => (Level::Ok, t.running.into(), devices),
     }
 }
 
@@ -618,20 +611,20 @@ fn draw_app_icon(c: &Canvas, r: Rect) {
 }
 
 /// One line saying what the display shows right now.
-fn showing(status: Option<&Status>) -> String {
+fn showing(status: Option<&Status>, t: &Strings) -> String {
     let Some(s) = status else {
-        return "Not connected to the service".into();
+        return t.not_connected.into();
     };
     if let Some(off) = s.display_off {
         return match off {
-            DisplayOff::Locked => "Display off while the PC is locked",
-            DisplayOff::ScreenOff => "Display off while the screen is off",
-            DisplayOff::Night => "Display off for the night",
+            DisplayOff::Locked => t.off_while_locked,
+            DisplayOff::ScreenOff => t.off_while_screen_off,
+            DisplayOff::Night => t.off_for_the_night,
         }
         .into();
     }
     if s.devices.is_empty() {
-        return "No cooler connected".into();
+        return t.no_cooler.into();
     }
     let device = if s.component == Some(Component::Gpu) {
         "GPU"
@@ -639,14 +632,14 @@ fn showing(status: Option<&Status>) -> String {
         "CPU"
     };
     let shown = match s.shown {
-        Some(Shown::Temperature) => format!("Showing the {device} temperature"),
-        Some(Shown::Usage) => format!("Showing the {device} usage"),
-        Some(Shown::Power) => format!("Showing the {device} power"),
-        Some(Shown::Custom) => "Showing the custom value".into(),
-        None => "Starting…".into(),
+        Some(Shown::Temperature) => fill(t.showing_temperature, &[device]),
+        Some(Shown::Usage) => fill(t.showing_usage, &[device]),
+        Some(Shown::Power) => fill(t.showing_power, &[device]),
+        Some(Shown::Custom) => t.showing_custom.into(),
+        None => t.starting.into(),
     };
     if s.alarm_active {
-        format!("{shown} · Alarm: too hot")
+        format!("{shown} · {}", t.too_hot)
     } else {
         shown
     }
@@ -658,6 +651,8 @@ enum Effect {
     None,
     Send(Vec<(&'static str, String)>),
     Autostart(bool),
+    /// `None` follows the Windows language.
+    Language(Option<Lang>),
     CheckUpdates,
     Open(String),
 }
@@ -671,18 +666,27 @@ enum UpdateState {
 }
 
 impl UpdateState {
-    fn label(&self) -> String {
+    fn label(&self, t: &Strings) -> String {
         match self {
-            UpdateState::Idle => "Check for updates".into(),
-            UpdateState::Checking => "Checking…".into(),
-            UpdateState::Done(Check::UpToDate) => {
-                format!("Up to date · v{}", env!("CARGO_PKG_VERSION"))
-            }
-            UpdateState::Done(Check::Available { version, .. }) => {
-                format!("Download v{version}")
-            }
-            UpdateState::Done(Check::Failed(_)) => "Couldn't check · Retry".into(),
+            UpdateState::Idle => t.check_updates.into(),
+            UpdateState::Checking => t.checking.into(),
+            UpdateState::Done(Check::UpToDate) => fill(t.up_to_date, &[env!("CARGO_PKG_VERSION")]),
+            UpdateState::Done(Check::Available { version, .. }) => fill(t.download, &[version]),
+            UpdateState::Done(Check::Failed(_)) => t.check_failed.into(),
         }
+    }
+}
+
+/// The entries of the language list: the Windows language, then every translation.
+fn language_choices() -> impl Iterator<Item = Option<Lang>> {
+    std::iter::once(None).chain(LANGS.into_iter().map(Some))
+}
+
+/// How a language choice reads in the list and on its button.
+fn language_label(choice: Option<Lang>, t: &Strings) -> String {
+    match choice {
+        Some(lang) => lang.name().into(),
+        None => format!("{} ({})", t.windows_language, i18n::system().name()),
     }
 }
 
@@ -711,6 +715,10 @@ struct Settings {
     /// The next digit typed into the custom number appends to it instead of replacing it.
     typing: bool,
     tracking_mouse: bool,
+    /// The open language list and its highlighted entry.
+    menu: Option<usize>,
+    /// The entries of the open list, from the last paint.
+    menu_hits: Vec<(usize, Rect)>,
     // Last: shut down after everything else is released.
     _gdiplus: Gdiplus,
 }
@@ -828,6 +836,8 @@ pub fn open() {
         focus_visible: false,
         typing: false,
         tracking_mouse: false,
+        menu: None,
+        menu_hits: Vec::new(),
         _gdiplus: gdiplus,
     };
     style_title_bar(hwnd, &state.theme);
@@ -939,6 +949,11 @@ fn run(effect: Effect) {
                 s.invalidate();
             });
         }
+        Effect::Language(choice) => {
+            i18n::choose(choice);
+            // Repaints the window too, and the tray tooltip follows the new language.
+            crate::tray::refresh(false);
+        }
         Effect::CheckUpdates => {
             // HWND is not Send; the thread only posts a message back to it.
             let Some(hwnd) = with(|s| s.hwnd as usize) else {
@@ -1003,7 +1018,10 @@ unsafe extern "system" fn window_proc(
         }
         WM_KEYDOWN => {
             if wparam as u16 == VK_ESCAPE {
-                unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+                // Escape closes the language list first, then the window.
+                if !with(Settings::close_menu).unwrap_or(false) {
+                    unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+                }
             } else {
                 let shift = unsafe { GetKeyState(VK_SHIFT.into()) } < 0;
                 let effect = with(|s| s.key(wparam as u16, shift)).unwrap_or(Effect::None);
@@ -1188,6 +1206,16 @@ impl Settings {
             unsafe { TrackMouseEvent(&mut tme) };
             self.tracking_mouse = true;
         }
+        // The open list takes the mouse for itself.
+        if self.menu.is_some() {
+            if let Some(item) = self.menu_hit(x, y)
+                && self.menu != Some(item)
+            {
+                self.menu = Some(item);
+                self.invalidate();
+            }
+            return;
+        }
         let hover = self.hit_test(x, y);
         if hover != self.hover {
             self.hover = hover;
@@ -1196,6 +1224,13 @@ impl Settings {
     }
 
     fn mouse_down(&mut self, x: f32, y: f32, shift: bool) -> Effect {
+        if self.menu.is_some() {
+            // A click outside the list closes it; a click on an entry picks it on release.
+            if self.menu_hit(x, y).is_none() {
+                self.close_menu();
+            }
+            return Effect::None;
+        }
         let Some(hit) = self.hit_test(x, y) else {
             return Effect::None;
         };
@@ -1219,6 +1254,12 @@ impl Settings {
     }
 
     fn mouse_up(&mut self, x: f32, y: f32) -> Effect {
+        if self.menu.is_some() {
+            return match self.menu_hit(x, y) {
+                Some(item) => self.pick_language(item),
+                None => Effect::None,
+            };
+        }
         let pressed = self.pressed.take();
         unsafe { KillTimer(self.hwnd, TIMER_REPEAT) };
         self.invalidate();
@@ -1259,6 +1300,19 @@ impl Settings {
     fn key(&mut self, key: u16, shift: bool) -> Effect {
         self.focus_visible = true;
         self.invalidate();
+        if let Some(item) = self.menu {
+            let last = language_choices().count() - 1;
+            match key {
+                VK_UP => self.menu = Some(item.saturating_sub(1)),
+                VK_DOWN => self.menu = Some((item + 1).min(last)),
+                VK_RETURN | VK_SPACE => return self.pick_language(item),
+                VK_TAB => {
+                    self.close_menu();
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         if key == VK_TAB {
             let (config, online) = (self.config.clone(), self.online());
             let order = focus_order(self.page, &config);
@@ -1277,7 +1331,7 @@ impl Settings {
             VK_LEFT | VK_DOWN => false,
             VK_SPACE | VK_RETURN => {
                 let part = match control {
-                    Control::Update | Control::UseCustom => Part::Button,
+                    Control::Update | Control::UseCustom | Control::Language => Part::Button,
                     // Enter confirms a typed number right away.
                     Control::CustomValue if key == VK_RETURN => {
                         self.typing = false;
@@ -1306,7 +1360,7 @@ impl Settings {
                 Effect::None
             }
             Control::Mode | Control::Source | Control::Unit | Control::CustomSymbol => {
-                let count = control.segments().len();
+                let count = control.segments(i18n::text()).len();
                 let current = control.selected_segment(&self.config);
                 let index = if forward {
                     (current + 1).min(count - 1)
@@ -1354,6 +1408,9 @@ impl Settings {
 
     /// The mouse wheel steps the stepper under the cursor.
     fn wheel(&mut self, up: bool) {
+        if self.menu.is_some() {
+            return;
+        }
         if let Some(hit) = self.hover
             && matches!(hit.part, Part::Minus | Part::Plus | Part::Field)
         {
@@ -1367,6 +1424,29 @@ impl Settings {
             self.focus = focus;
             self.typing = false;
         }
+    }
+
+    /// The language list entry at a point.
+    fn menu_hit(&self, x: f32, y: f32) -> Option<usize> {
+        self.menu_hits
+            .iter()
+            .find(|(_, r)| r.contains(x, y))
+            .map(|&(i, _)| i)
+    }
+
+    /// Closes the language list; `false` if it was not open.
+    fn close_menu(&mut self) -> bool {
+        let open = self.menu.take().is_some();
+        if open {
+            self.menu_hits.clear();
+            self.invalidate();
+        }
+        open
+    }
+
+    fn pick_language(&mut self, item: usize) -> Effect {
+        self.close_menu();
+        Effect::Language(language_choices().nth(item).unwrap_or(None))
     }
 
     /// Applies a click on a segment, a switch, a button or the sidebar. Stepper buttons act on
@@ -1384,6 +1464,13 @@ impl Settings {
                 self.send_with(Control::Mode)
             }
             (Control::Autostart, _) => Effect::Autostart(!self.autostart),
+            (Control::Language, _) => {
+                let chosen = i18n::choice();
+                self.menu = Some(language_choices().position(|c| c == chosen).unwrap_or(0));
+                self.hover = None;
+                self.invalidate();
+                Effect::None
+            }
             (Control::Update, _) => match &self.update {
                 UpdateState::Checking => Effect::None,
                 UpdateState::Done(Check::Available { url, .. }) => Effect::Open(url.clone()),
@@ -1446,13 +1533,15 @@ impl Settings {
 
     fn draw(&mut self, c: &Canvas) {
         let t = self.theme;
+        let tx = i18n::text();
         c.clear(t.backdrop);
         self.hits.clear();
+        self.menu_hits.clear();
         self.draw_sidebar(c);
 
         let page = self.page;
         c.text(
-            page.title(),
+            page.title(tx),
             Rect::new(PAGE_X, 22.0, PAGE_W, 36.0),
             26.0,
             Weight::Semibold,
@@ -1460,7 +1549,7 @@ impl Settings {
             Align::Left,
         );
         c.text(
-            page.subtitle(),
+            page.subtitle(tx),
             Rect::new(PAGE_X + 1.0, 56.0, PAGE_W, 18.0),
             13.0,
             Weight::Regular,
@@ -1470,6 +1559,9 @@ impl Settings {
         match page {
             Page::Overview => self.draw_overview(c),
             _ => self.draw_settings(c, page),
+        }
+        if self.menu.is_some() {
+            self.draw_menu(c);
         }
     }
 
@@ -1485,7 +1577,8 @@ impl Settings {
             Align::Left,
         );
         // The service state, where it is always visible.
-        let (level, title, detail) = status_lines(self.status.as_ref());
+        let tx = i18n::text();
+        let (level, title, detail) = status_lines(self.status.as_ref(), tx);
         let dot = match level {
             Level::Ok => t.ok,
             Level::Warn => t.warn,
@@ -1545,7 +1638,7 @@ impl Settings {
                 Align::Center,
             );
             c.text(
-                page.title(),
+                page.title(tx),
                 Rect::new(r.x + 46.0, r.y, r.w - 52.0, r.h),
                 14.0,
                 if selected {
@@ -1583,12 +1676,12 @@ impl Settings {
     /// A page of setting cards.
     fn draw_settings(&mut self, c: &Canvas, page: Page) {
         let mut y = PAGE_TOP;
-        for &(control, title, description) in page.settings() {
+        for &control in page.settings() {
             if !control.visible(&self.config) {
                 continue;
             }
             let row = Rect::new(PAGE_X, y, PAGE_W, SETTING_H);
-            self.draw_setting(c, row, control, title, description);
+            self.draw_setting(c, row, control);
             y = row.bottom() + SETTING_GAP;
         }
     }
@@ -1612,6 +1705,7 @@ impl Settings {
     /// right; or only the values, in three columns, for displays the preview does not match.
     fn draw_readout(&self, c: &Canvas, card: Rect) {
         let t = self.theme;
+        let tx = i18n::text();
         let status = self.status.as_ref();
         let preview = status.is_none_or(|s| preview::applies_to(&s.devices));
         let mut values_x = card.x + 24.0;
@@ -1630,7 +1724,7 @@ impl Settings {
                 frame.filter(|_| status.is_none_or(|s| s.display_off.is_none())),
             );
             c.text(
-                &showing(status),
+                &showing(status, tx),
                 Rect::new(area.x, area.bottom() + 6.0, area.w, 18.0),
                 12.0,
                 Weight::Regular,
@@ -1638,9 +1732,9 @@ impl Settings {
                 Align::Center,
             );
             values_x = area.right() + 28.0;
-        } else if let Some(s) = status {
+        } else if status.is_some() {
             c.text(
-                &showing(Some(s)),
+                &showing(status, tx),
                 Rect::new(card.x + 24.0, card.bottom() - 30.0, card.w - 48.0, 18.0),
                 12.0,
                 Weight::Regular,
@@ -1658,25 +1752,25 @@ impl Settings {
         let alarm = status.is_some_and(|s| s.alarm_active);
         let mut values = vec![
             (
-                "CPU temperature",
+                tx.cpu_temperature,
                 temp(status.and_then(|s| s.cpu_temp)),
                 if alarm { t.alarm } else { t.text },
             ),
             (
-                "CPU usage",
+                tx.cpu_usage,
                 percent(status.and_then(|s| s.cpu_usage)),
                 t.text,
             ),
         ];
         if let Some(s) = status.filter(|s| s.gpu.temp.is_some() || s.gpu.usage.is_some()) {
-            values.push(("GPU temperature", temp(s.gpu.temp), t.text));
-            values.push(("GPU usage", percent(s.gpu.usage), t.text));
+            values.push((tx.gpu_temperature, temp(s.gpu.temp), t.text));
+            values.push((tx.gpu_usage, percent(s.gpu.usage), t.text));
         }
         if let Some(w) = status.and_then(|s| s.cpu_power) {
-            values.push(("CPU power", format!("{w:.0} W"), t.text));
+            values.push((tx.cpu_power, format!("{w:.0} W"), t.text));
         }
         if let Some(f) = status.and_then(|s| s.cpu_freq) {
-            values.push(("CPU clock", format!("{f:.0} MHz"), t.text));
+            values.push((tx.cpu_clock, format!("{f:.0} MHz"), t.text));
         }
         // With only the CPU measured, the peaks of the chart are worth a glance too.
         if values.len() == 2
@@ -1684,8 +1778,8 @@ impl Settings {
         {
             let peak_temp = s.history.iter().filter_map(|h| h.cpu_temp).reduce(f32::max);
             let peak_usage = s.history.iter().map(|h| h.cpu_usage).reduce(f32::max);
-            values.push(("Highest temperature", temp(peak_temp), t.text));
-            values.push(("Highest usage", percent(peak_usage), t.text));
+            values.push((tx.highest_temperature, temp(peak_temp), t.text));
+            values.push((tx.highest_usage, percent(peak_usage), t.text));
         }
         let columns = if preview { 2 } else { 3 };
         let rows = values.len().div_ceil(columns).max(1);
@@ -1715,11 +1809,13 @@ impl Settings {
 
     fn draw_chart(&self, c: &Canvas, card: Rect) {
         let t = self.theme;
+        let tx = i18n::text();
         self.draw_card(c, card);
         let span = HISTORY_LEN as u32 * self.config.interval_ms / 1000;
+        let span_text = format_seconds(tx, span);
         c.text(
-            &format!("Last {}", format_seconds(span)),
-            Rect::new(card.x + 16.0, card.y + 12.0, 160.0, 20.0),
+            &fill(tx.last, &[&span_text]),
+            Rect::new(card.x + 16.0, card.y + 12.0, 200.0, 20.0),
             13.0,
             Weight::Semibold,
             t.text,
@@ -1728,7 +1824,7 @@ impl Settings {
 
         // Legend, right-aligned.
         let mut lx = card.right() - 16.0;
-        for (label, color) in [("Usage", t.usage_line), ("Temperature", t.temp_line)] {
+        for (label, color) in [(tx.usage, t.usage_line), (tx.temperature, t.temp_line)] {
             let w = c.measure(label, 12.0, Weight::Regular);
             lx -= w;
             c.text(
@@ -1775,7 +1871,7 @@ impl Settings {
             );
         }
         c.text(
-            &format!("-{}", format_seconds(span)),
+            &format!("-{span_text}"),
             Rect::new(plot.x, plot.bottom() + 6.0, 80.0, 16.0),
             11.0,
             Weight::Regular,
@@ -1783,7 +1879,7 @@ impl Settings {
             Align::Left,
         );
         c.text(
-            "now",
+            tx.now,
             Rect::new(plot.right() - 80.0, plot.bottom() + 6.0, 80.0, 16.0),
             11.0,
             Weight::Regular,
@@ -1795,8 +1891,8 @@ impl Settings {
             let y = y_of(f32::from(self.config.alarm_threshold));
             c.dashed_line(plot.x, y, plot.right(), y, 1.0, t.alarm.alpha(0xB0));
             c.text(
-                "Alarm",
-                Rect::new(plot.right() - 60.0, y - 17.0, 56.0, 14.0),
+                tx.alarm,
+                Rect::new(plot.right() - 120.0, y - 17.0, 116.0, 14.0),
                 11.0,
                 Weight::Regular,
                 t.text_dim,
@@ -1808,9 +1904,9 @@ impl Settings {
         if history.len() < 2 {
             c.text(
                 if self.online() {
-                    "Collecting data…"
+                    tx.collecting_data
                 } else {
-                    "No data"
+                    tx.no_data
                 },
                 plot,
                 12.0,
@@ -1856,15 +1952,10 @@ impl Settings {
     }
 
     /// One setting card: title and description on the left, the control on the right.
-    fn draw_setting(
-        &mut self,
-        c: &Canvas,
-        row: Rect,
-        control: Control,
-        title: &str,
-        description: &str,
-    ) {
+    fn draw_setting(&mut self, c: &Canvas, row: Rect, control: Control) {
         let t = self.theme;
+        let tx = i18n::text();
+        let (title, description) = control.label(tx);
         self.draw_card(c, row);
         let enabled = self.enabled(control);
         let right = row.right() - 18.0;
@@ -1883,7 +1974,11 @@ impl Settings {
                 self.draw_switch(c, control, control.is_on(&config), right, cy, enabled)
             }
             Control::Update => self.draw_update_button(c, right, cy),
-            Control::UseCustom => self.draw_button(c, control, "Show it", right, cy, enabled),
+            Control::UseCustom => self.draw_button(c, control, tx.show_it, right, cy, enabled),
+            Control::Language => {
+                let label = language_label(i18n::choice(), tx);
+                self.draw_dropdown(c, &label, right, cy)
+            }
             Control::CustomValue => {
                 let text = config.custom_value.to_string();
                 self.draw_stepper(c, control, &text, right, cy, enabled)
@@ -1893,11 +1988,11 @@ impl Settings {
                 self.draw_stepper(c, control, &text, right, cy, enabled)
             }
             Control::AutoInterval => {
-                let text = format_seconds(config.auto_interval_s);
+                let text = format_seconds(tx, config.auto_interval_s);
                 self.draw_stepper(c, control, &text, right, cy, enabled)
             }
             Control::Interval => {
-                let text = format_ms(config.interval_ms);
+                let text = format_ms(tx, config.interval_ms);
                 self.draw_stepper(c, control, &text, right, cy, enabled)
             }
             Control::Threshold => {
@@ -1916,7 +2011,7 @@ impl Settings {
         };
         let text_w = area.x - row.x - 36.0;
         c.text(
-            title,
+            &title,
             Rect::new(row.x + 18.0, row.y + 12.0, text_w, 20.0),
             14.0,
             Weight::Regular,
@@ -1951,7 +2046,7 @@ impl Settings {
         enabled: bool,
     ) -> Rect {
         let t = self.theme;
-        let options = control.segments();
+        let options = control.segments(i18n::text());
         let widths: Vec<f32> = options
             .iter()
             .map(|o| {
@@ -2027,9 +2122,16 @@ impl Settings {
             c.stroke_round_rect(track, 10.0, 1.5, fade(t.text_dim, enabled));
             c.fill_circle(track.x + 10.0, cy, 5.0, fade(t.text_dim, enabled));
         }
-        let label = Rect::new(track.x - 44.0, cy - 10.0, 34.0, 20.0);
+        let tx = i18n::text();
+        let text = if on { tx.on } else { tx.off };
+        // Room for the longer of the two, so the switch does not move when it flips.
+        let label_w = c
+            .measure(tx.on, 12.5, Weight::Regular)
+            .max(c.measure(tx.off, 12.5, Weight::Regular))
+            .ceil();
+        let label = Rect::new(track.x - 10.0 - label_w, cy - 10.0, label_w, 20.0);
         c.text(
-            if on { "On" } else { "Off" },
+            text,
             label,
             12.5,
             Weight::Regular,
@@ -2085,7 +2187,7 @@ impl Settings {
     /// is waiting.
     fn draw_update_button(&mut self, c: &Canvas, right: f32, cy: f32) -> Rect {
         let t = self.theme;
-        let label = self.update.label();
+        let label = self.update.label(i18n::text());
         let available = matches!(self.update, UpdateState::Done(Check::Available { .. }));
         let weight = if available {
             Weight::Semibold
@@ -2124,6 +2226,105 @@ impl Settings {
         }
         self.hits.push((hit, r));
         r
+    }
+
+    /// A button that opens a list, right-aligned at `right`.
+    fn draw_dropdown(&mut self, c: &Canvas, label: &str, right: f32, cy: f32) -> Rect {
+        let t = self.theme;
+        let w = (c.measure(label, 13.0, Weight::Regular) + 52.0).round();
+        let r = Rect::new(right - w, cy - 15.0, w, 30.0);
+        let hit = Hit {
+            control: Control::Language,
+            part: Part::Button,
+        };
+        let (hovered, pressed) = self.state(hit);
+        let open = self.menu.is_some();
+        let fill = if pressed || open {
+            t.border
+        } else if hovered {
+            t.control_hover
+        } else {
+            t.control
+        };
+        c.fill_round_rect(r, 6.0, fill);
+        c.stroke_round_rect(r, 6.0, 1.0, t.border);
+        c.text(
+            label,
+            Rect::new(r.x + 14.0, r.y, r.w - 44.0, r.h),
+            13.0,
+            Weight::Regular,
+            t.text,
+            Align::Left,
+        );
+        c.text(
+            CHEVRON_DOWN,
+            Rect::new(r.right() - 30.0, r.y, 18.0, r.h),
+            10.0,
+            Weight::Icon,
+            t.text_dim,
+            Align::Center,
+        );
+        self.hits.push((hit, r));
+        r
+    }
+
+    /// The open language list, under its button.
+    fn draw_menu(&mut self, c: &Canvas) {
+        let Some(&(_, anchor)) = self
+            .hits
+            .iter()
+            .find(|(hit, _)| hit.control == Control::Language)
+        else {
+            self.menu = None;
+            return;
+        };
+        let t = self.theme;
+        let tx = i18n::text();
+        let chosen = i18n::choice();
+        let items: Vec<(Option<Lang>, String)> = language_choices()
+            .map(|choice| (choice, language_label(choice, tx)))
+            .collect();
+        let text_w = items
+            .iter()
+            .map(|(_, label)| c.measure(label, 13.0, Weight::Regular))
+            .fold(0.0, f32::max);
+        let w = (text_w + 64.0).max(anchor.w).round();
+        let h = items.len() as f32 * MENU_ITEM_H + 2.0 * MENU_PAD;
+        let x = anchor.right() - w;
+        let y = (anchor.bottom() + 6.0).min(HEIGHT - 12.0 - h).max(12.0);
+        let panel = Rect::new(x, y, w, h);
+        c.fill_round_rect(panel, RADIUS, t.background);
+        c.stroke_round_rect(panel, RADIUS, 1.0, t.border);
+        for (i, (choice, label)) in items.iter().enumerate() {
+            let r = Rect::new(
+                x + MENU_PAD,
+                y + MENU_PAD + i as f32 * MENU_ITEM_H,
+                w - 2.0 * MENU_PAD,
+                MENU_ITEM_H,
+            );
+            if self.menu == Some(i) {
+                c.fill_round_rect(r, 4.0, t.control_hover);
+            }
+            if *choice == chosen {
+                c.text(
+                    CHECK_MARK,
+                    Rect::new(r.x + 8.0, r.y, 18.0, r.h),
+                    12.0,
+                    Weight::Icon,
+                    t.accent,
+                    Align::Center,
+                );
+            }
+            c.text(
+                label,
+                Rect::new(r.x + 34.0, r.y, r.w - 40.0, r.h),
+                13.0,
+                Weight::Regular,
+                t.text,
+                Align::Left,
+            );
+            self.menu_hits.push((i, r));
+        }
     }
 
     fn draw_stepper(
@@ -2220,6 +2421,10 @@ fn fade(color: Color, enabled: bool) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn en() -> &'static Strings {
+        Lang::En.strings()
+    }
 
     const AUTO_STEPS: &[(u32, u32)] = &[(10, 1), (60, 5), (600, 30), (u32::MAX, 60)];
 
@@ -2422,7 +2627,7 @@ mod tests {
         );
         assert_eq!(Control::Autostart.setting(&config), None);
         for page in PAGES {
-            for &(c, ..) in page.settings() {
+            for &c in page.settings() {
                 if let Some((key, value)) = c.setting(&config) {
                     assert!(Config::default().set(key, &value).is_ok(), "{key}={value}");
                 }
@@ -2440,20 +2645,21 @@ mod tests {
 
     #[test]
     fn durations_read_naturally() {
-        assert_eq!(format_seconds(5), "5 s");
-        assert_eq!(format_seconds(120), "2 min");
-        assert_eq!(format_seconds(90), "1 min 30 s");
-        assert_eq!(format_ms(250), "0.25 s");
-        assert_eq!(format_ms(1500), "1.5 s");
-        assert_eq!(format_ms(1000), "1 s");
+        assert_eq!(format_seconds(en(), 5), "5 s");
+        assert_eq!(format_seconds(en(), 120), "2 min");
+        assert_eq!(format_seconds(en(), 90), "1 min 30 s");
+        assert_eq!(format_ms(en(), 250), "0.25 s");
+        assert_eq!(format_ms(en(), 1500), "1.5 s");
+        assert_eq!(format_ms(Lang::Es.strings(), 1500), "1,5 s");
+        assert_eq!(format_ms(en(), 1000), "1 s");
     }
 
     #[test]
     fn sidebar_reports_the_worst_problem() {
-        assert_eq!(status_lines(None).0, Level::Error);
+        assert_eq!(status_lines(None, en()).0, Level::Error);
         let mut status = Status::default();
         assert_eq!(
-            status_lines(Some(&status)),
+            status_lines(Some(&status), en()),
             (
                 Level::Warn,
                 "Waiting for a cooler".to_owned(),
@@ -2461,9 +2667,9 @@ mod tests {
             )
         );
         status.devices = vec!["AK400 DIGITAL".into()];
-        assert_eq!(status_lines(Some(&status)).0, Level::Ok);
+        assert_eq!(status_lines(Some(&status), en()).0, Level::Ok);
         status.temp_error = Some("PawnIO is not installed".into());
-        assert_eq!(status_lines(Some(&status)).0, Level::Warn);
+        assert_eq!(status_lines(Some(&status), en()).0, Level::Warn);
     }
 
     #[test]
@@ -2474,9 +2680,32 @@ mod tests {
             component: Some(Component::Gpu),
             ..Status::default()
         };
-        assert_eq!(showing(Some(&status)), "Showing the GPU usage");
+        assert_eq!(showing(Some(&status), en()), "Showing the GPU usage");
         status.display_off = Some(DisplayOff::Night);
-        assert_eq!(showing(Some(&status)), "Display off for the night");
-        assert_eq!(showing(None), "Not connected to the service");
+        assert_eq!(showing(Some(&status), en()), "Display off for the night");
+        assert_eq!(showing(None, en()), "Not connected to the service");
+    }
+
+    #[test]
+    fn language_list_starts_with_windows() {
+        let choices: Vec<_> = language_choices().collect();
+        assert_eq!(choices[0], None);
+        assert_eq!(choices.len(), LANGS.len() + 1);
+        assert_eq!(language_label(Some(Lang::De), en()), "Deutsch");
+        assert!(language_label(None, en()).starts_with("Same as Windows ("));
+    }
+
+    #[test]
+    fn every_setting_has_a_label() {
+        for page in PAGES {
+            for &c in page.settings() {
+                let (title, about) = c.label(en());
+                assert!(!title.is_empty() && !about.is_empty(), "{c:?}");
+            }
+        }
+        assert_eq!(
+            Control::Update.label(en()).0,
+            format!("Version {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

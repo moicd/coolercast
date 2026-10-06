@@ -109,6 +109,9 @@ pub struct Canvas {
     bitmap: *mut GpBitmap,
     scale: f32,
     families: [*mut GpFontFamily; 3],
+    /// Font style of each family: semibold is synthesized from bold where no semibold face
+    /// exists.
+    styles: [i32; 3],
     format: *mut GpStringFormat,
     fonts: RefCell<Vec<Font>>,
 }
@@ -179,12 +182,26 @@ impl Canvas {
                 (ok == Ok).then_some(f)
             })
         };
-        let regular = family(&["Segoe UI", "Tahoma"]).unwrap_or_else(|| {
-            let mut f = ptr::null_mut();
-            unsafe { GdipGetGenericFontFamilySansSerif(&mut f) };
-            f
-        });
-        let semibold = family(&["Segoe UI Semibold"]).unwrap_or(regular);
+        // Languages Segoe UI does not cover use their own Windows UI font, in bold.
+        let script = crate::i18n::current().font();
+        let regular = script
+            .and_then(|name| family(&[name]))
+            .or_else(|| family(&["Segoe UI", "Tahoma"]))
+            .unwrap_or_else(|| {
+                let mut f = ptr::null_mut();
+                unsafe { GdipGetGenericFontFamilySansSerif(&mut f) };
+                f
+            });
+        let semibold = match script {
+            Some(_) => None,
+            None => family(&["Segoe UI Semibold"]),
+        };
+        let semibold_style = if semibold.is_some() {
+            FontStyleRegular
+        } else {
+            FontStyleBold
+        };
+        let semibold = semibold.unwrap_or(regular);
         let icons = family(&["Segoe Fluent Icons", "Segoe MDL2 Assets"]).unwrap_or(regular);
         // Typographic layout: no extra padding around the text.
         let mut generic = ptr::null_mut();
@@ -201,6 +218,7 @@ impl Canvas {
             bitmap,
             scale,
             families: [regular, semibold, icons],
+            styles: [FontStyleRegular, semibold_style, FontStyleRegular],
             format,
             fonts: RefCell::new(Vec::new()),
         }
@@ -407,8 +425,9 @@ impl Canvas {
             return f.raw;
         }
         let family = self.families[weight as usize];
+        let style = self.styles[weight as usize];
         let mut raw = ptr::null_mut();
-        unsafe { GdipCreateFont(family, self.s(size), FontStyleRegular, UnitPixel, &mut raw) };
+        unsafe { GdipCreateFont(family, self.s(size), style, UnitPixel, &mut raw) };
         fonts.push(Font { size, weight, raw });
         raw
     }

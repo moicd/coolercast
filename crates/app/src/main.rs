@@ -11,6 +11,8 @@ mod autostart;
 #[cfg(windows)]
 mod gfx;
 #[cfg(windows)]
+mod i18n;
+#[cfg(windows)]
 mod icon;
 #[cfg(windows)]
 mod preview;

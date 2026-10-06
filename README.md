@@ -50,6 +50,9 @@ These links always point to the latest version. Older versions, release notes an
   Windows 11 settings, with a live preview of the cooler display and the last two minutes of
   temperature and usage (translucent Acrylic glass on Windows 11). It follows the Windows text
   size, high contrast and transparency effects settings.
+- The Windows app speaks English, Spanish, Portuguese, French, German, Italian, Polish, Turkish,
+  Russian, Chinese, Japanese and Korean. It follows the Windows display language, or the one picked
+  under **General → Language** (kept per user in `HKCU\Software\CoolerCast`).
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
 - Windows efficiency mode (EcoQoS): the service and the tray icon ask Windows for efficiency cores
   and clock speeds; the settings window runs normally while it is open.
