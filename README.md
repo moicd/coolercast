@@ -284,8 +284,9 @@ coolercast probe raw 19 5 1 2 3 0
 ```
 
 Press Enter for the next value and type what you see to note it; the notes are printed as a
-table at the end. If the display stops responding, unplug the cooler's USB cable. Findings are
-welcome as issues.
+table at the end. If the display stops responding, unplug the cooler's USB cable. What is known
+so far is in [the protocol notes](docs/protocol-ak-series.md#undocumented-digit-values): a few
+letters (C, L, h) and dashes, not enough to write words. Findings are welcome as issues.
 
 The Windows service log is at `C:\ProgramData\CoolerCast\coolercast.log`.
 
