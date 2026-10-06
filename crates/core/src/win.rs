@@ -17,7 +17,10 @@ use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentProcess, INFINITE, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    ProcessPowerThrottling, SetEvent, SetProcessInformation, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 
 /// Encodes a string as a null-terminated UTF-16 buffer.
@@ -145,6 +148,40 @@ fn millis(timeout: Duration) -> u32 {
     timeout.as_millis().min(u128::from(INFINITE - 1)) as u32
 }
 
+/// Turns EcoQoS on for this process, or gives the choice back to Windows.
+///
+/// With EcoQoS, Windows runs the process on efficiency cores and at the most efficient clock
+/// speed, even on AC power. Meant for background work that nobody waits for; interactive code
+/// should leave it to Windows, which raises the QoS of focused windows on its own. The base
+/// priority is left alone on purpose: at idle priority the display would stop updating under
+/// full load, when the temperature matters most.
+pub fn set_efficiency_mode(on: bool) -> io::Result<()> {
+    let mask = if on {
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+    } else {
+        0
+    };
+    // ControlMask 0 resets to system management; with the flag, StateMask turns it on.
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: mask,
+        StateMask: mask,
+    };
+    let ok = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&raw const state).cast(),
+            size_of_val(&state) as u32,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// Returns `true` if a process with the given executable name (case-insensitive) is running.
 pub fn process_running(exe_name: &str) -> bool {
     let Ok(snapshot) = Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })
@@ -172,6 +209,33 @@ mod tests {
         let w = wide("AK400");
         assert_eq!(w.last(), Some(&0));
         assert_eq!(from_wide(&w), "AK400");
+    }
+
+    #[test]
+    fn efficiency_mode_round_trip() {
+        use windows_sys::Win32::System::Threading::GetProcessInformation;
+
+        let read = || {
+            let mut state = PROCESS_POWER_THROTTLING_STATE {
+                Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                ..Default::default()
+            };
+            let ok = unsafe {
+                GetProcessInformation(
+                    GetCurrentProcess(),
+                    ProcessPowerThrottling,
+                    (&raw mut state).cast(),
+                    size_of_val(&state) as u32,
+                )
+            };
+            assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+            (state.ControlMask, state.StateMask)
+        };
+        let eco = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        set_efficiency_mode(true).unwrap();
+        assert_eq!(read(), (eco, eco));
+        set_efficiency_mode(false).unwrap();
+        assert_eq!(read(), (0, 0));
     }
 
     #[test]

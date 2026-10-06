@@ -45,6 +45,8 @@ These links always point to the latest version. Older versions, release notes an
   of the cooler display and the last two minutes of temperature and usage (translucent Acrylic glass
   on Windows 11).
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
+- Windows efficiency mode (EcoQoS): the service and the tray icon ask Windows for efficiency cores
+  and clock speeds; the settings window runs normally while it is open.
 - No runtime and no telemetry. The only network access is the **Check for updates** button, which
   asks GitHub for the latest version when you click it. The Linux build is a single static binary.
 
@@ -284,6 +286,11 @@ coolercast (service)
 
 On Windows the service runs as LocalSystem only because reading the CPU temperature needs it; the
 app runs as a normal user and talks to the service over the control channel.
+
+Both opt into EcoQoS (`SetProcessInformation` with `ProcessPowerThrottling`), so on CPUs with
+efficiency cores Windows schedules them there, at the most efficient clock speed. The app turns it
+off while its window or menu is open. Their priority stays normal on purpose: at idle priority the
+display would stop updating under full load, exactly when the temperature matters.
 
 ## Building
 

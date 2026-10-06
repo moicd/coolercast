@@ -429,6 +429,11 @@ fn probe(args: &[String]) -> Result {
 /// Loads the settings, creates the engine and serves IPC requests for it. The IPC result is
 /// returned separately so callers can decide whether it is fatal.
 fn start_engine() -> (Arc<Engine>, io::Result<()>) {
+    // A few microseconds of work per refresh: efficiency cores and clocks are plenty.
+    #[cfg(windows)]
+    if let Err(e) = coolercast_core::win::set_efficiency_mode(true) {
+        coolercast_core::warn!("efficiency mode unavailable: {e}");
+    }
     let config_path = paths::config_file();
     let config = Config::load(&config_path).unwrap_or_else(|e| {
         error!("invalid {}, using defaults: {e}", config_path.display());
