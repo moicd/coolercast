@@ -8,7 +8,7 @@ The official app is an Electron application that, on a typical setup, keeps **16
 [the analysis](docs/official-app-analysis.md)). CoolerCast does the same job with a single small
 service written in Rust, plus an optional tray icon and settings window on Windows.
 
-| | Official DeepCool app 1.2.14 | CoolerCast 0.4 |
+| | Official DeepCool app 1.2.14 | CoolerCast 0.5 |
 |---|---|---|
 | Processes | 16 (plus 3 services and 4 drivers) | 1 service + optional tray icon |
 | RAM | ~1 GB working set | 0.8 MB private (service), 2.1 MB (app with its window open) |
