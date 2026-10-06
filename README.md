@@ -48,7 +48,8 @@ These links always point to the latest version. Older versions, release notes an
 - Runs as a service: starts with the PC, no window needed.
 - Windows: optional tray icon that shows the temperature, and a settings window in the style of the
   Windows 11 settings, with a live preview of the cooler display and the last two minutes of
-  temperature and usage (translucent Acrylic glass on Windows 11).
+  temperature and usage (translucent Acrylic glass on Windows 11). It follows the Windows text
+  size, high contrast and transparency effects settings.
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
 - Windows efficiency mode (EcoQoS): the service and the tray icon ask Windows for efficiency cores
   and clock speeds; the settings window runs normally while it is open.

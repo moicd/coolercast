@@ -9,7 +9,7 @@
 //! The window only exists while it is open; closing it releases GDI+ and every drawing resource,
 //! so the tray icon alone stays as small as before.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Mutex;
 use std::{mem, ptr, thread};
 
@@ -50,11 +50,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::autostart;
 use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight};
 use crate::preview::{self, Frame};
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::update::{self, Check};
 
 /// Posted by the update check thread when it has an answer.
 const WM_UPDATE_CHECKED: u32 = WM_APP + 10;
+/// `MK_SHIFT` in the `wParam` of mouse messages.
+const MK_SHIFT: usize = 0x0004;
 
 /// The answer of the last update check, handed from its thread to the window.
 static UPDATE_RESULT: Mutex<Option<Check>> = Mutex::new(None);
@@ -69,7 +71,7 @@ const SIDEBAR_W: f32 = 224.0;
 const PAGE_X: f32 = SIDEBAR_W + 12.0;
 const PAGE_W: f32 = WIDTH - PAGE_X - 28.0;
 const PAGE_TOP: f32 = 84.0;
-const NAV_TOP: f32 = 96.0;
+const NAV_TOP: f32 = 116.0;
 const NAV_H: f32 = 40.0;
 const SETTING_H: f32 = 64.0;
 const SETTING_GAP: f32 = 6.0;
@@ -111,7 +113,7 @@ impl Page {
             Page::Overview => "Overview",
             Page::Display => "Display",
             Page::Custom => "Custom value",
-            Page::TurnOff => "Turn off",
+            Page::TurnOff => "Display off",
             Page::Alarm => "Alarm",
             Page::General => "General",
         }
@@ -137,7 +139,7 @@ impl Page {
             Page::Custom => "A fixed number, shown when Show is set to Custom",
             Page::TurnOff => "Let the display go dark when nobody is looking",
             Page::Alarm => "A warning when the processor gets too hot",
-            Page::General => "CoolerCast itself",
+            Page::General => "Startup and updates",
         }
     }
 
@@ -170,6 +172,11 @@ impl Page {
                 ),
             ],
             Page::Custom => &[
+                (
+                    Control::UseCustom,
+                    "Not shown right now",
+                    "The display shows this value when Show is set to Custom",
+                ),
                 (
                     Control::CustomValue,
                     "Number",
@@ -217,7 +224,7 @@ impl Page {
                 ),
                 (
                     Control::Update,
-                    "Updates",
+                    concat!("Version ", env!("CARGO_PKG_VERSION")),
                     "Asks GitHub for the latest version, only when you click",
                 ),
             ],
@@ -231,6 +238,8 @@ enum Control {
     Nav(Page),
     Autostart,
     Update,
+    /// Switches the display to the custom value.
+    UseCustom,
     Mode,
     Source,
     AutoInterval,
@@ -293,6 +302,7 @@ impl Control {
             Control::AutoInterval => config.mode == Mode::Auto || config.source == Source::Auto,
             Control::NightStart | Control::NightEnd => config.off_at_night,
             Control::Threshold => config.alarm,
+            Control::UseCustom => config.mode != Mode::Custom,
             _ => true,
         }
     }
@@ -463,7 +473,9 @@ impl Control {
             Control::CustomValue => ("custom_value", config.custom_value.to_string()),
             Control::CustomSymbol => ("custom_symbol", config.custom_symbol.to_string()),
             Control::CustomBar => ("custom_bar", config.custom_bar.to_string()),
-            Control::Nav(_) | Control::Autostart | Control::Update => return None,
+            Control::Nav(_) | Control::Autostart | Control::Update | Control::UseCustom => {
+                return None;
+            }
         })
     }
 }
@@ -570,7 +582,7 @@ fn status_lines(status: Option<&Status>) -> (Level, String, String) {
         return (
             Level::Error,
             "Service not running".into(),
-            "Reinstall CoolerCast".into(),
+            "Reinstall CoolerCast to start it".into(),
         );
     };
     let devices = if s.devices.is_empty() {
@@ -579,10 +591,30 @@ fn status_lines(status: Option<&Status>) -> (Level, String, String) {
         s.devices.join(", ")
     };
     match (&s.temp_error, s.devices.is_empty()) {
-        (Some(_), _) => (Level::Warn, "No temperature".into(), devices),
+        (Some(error), _) => (
+            Level::Warn,
+            "Temperature unavailable".into(),
+            error.split(';').next().unwrap_or(error).to_owned(),
+        ),
         (None, true) => (Level::Warn, "Waiting for a cooler".into(), devices),
         (None, false) => (Level::Ok, "Running".into(), devices),
     }
+}
+
+/// The app icon, as `assets/make-icon.ps1` draws it: a teal badge with a white "°C" mark.
+fn draw_app_icon(c: &Canvas, r: Rect) {
+    let size = r.w;
+    c.fill_round_rect_v(
+        r,
+        size * 0.22,
+        Color::rgb(0x14, 0xB8, 0xA6),
+        Color::rgb(0x0F, 0x76, 0x6E),
+    );
+    let white = Color::rgb(0xFF, 0xFF, 0xFF);
+    let center = (r.x + size * 0.56, r.y + size * 0.55);
+    c.stroke_arc(center, size * 0.25, (45.0, 270.0), size * 0.13, white);
+    let ring = (r.x + size * 0.24, r.y + size * 0.27);
+    c.stroke_arc(ring, size * 0.085, (0.0, 360.0), size * 0.07, white);
 }
 
 /// One line saying what the display shows right now.
@@ -606,12 +638,17 @@ fn showing(status: Option<&Status>) -> String {
     } else {
         "CPU"
     };
-    match s.shown {
+    let shown = match s.shown {
         Some(Shown::Temperature) => format!("Showing the {device} temperature"),
         Some(Shown::Usage) => format!("Showing the {device} usage"),
         Some(Shown::Power) => format!("Showing the {device} power"),
         Some(Shown::Custom) => "Showing the custom value".into(),
         None => "Starting…".into(),
+    };
+    if s.alarm_active {
+        format!("{shown} · Alarm: too hot")
+    } else {
+        shown
     }
 }
 
@@ -651,7 +688,10 @@ impl UpdateState {
 
 struct Settings {
     hwnd: HWND,
+    /// Device pixels per DIP: the monitor DPI times `zoom`.
     scale: f32,
+    /// The Windows text size setting, as far as the window still fits the screen.
+    zoom: f32,
     theme: Theme,
     status: Option<Status>,
     /// The settings as shown; ahead of `status` while stepper changes are pending.
@@ -677,6 +717,8 @@ struct Settings {
 
 thread_local! {
     static SETTINGS: RefCell<Option<Settings>> = const { RefCell::new(None) };
+    /// The page shown when the window was last closed: it opens there again.
+    static LAST_PAGE: Cell<Page> = const { Cell::new(Page::Overview) };
 }
 
 /// Runs `f` on the window state, unless the window is closed or the state is already borrowed
@@ -719,7 +761,7 @@ pub fn open() {
     unsafe { RegisterClassW(&wc) };
 
     // Center on the monitor with the cursor (where the tray icon was clicked).
-    let (x, y, w, h) = unsafe {
+    let (x, y, w, h, zoom) = unsafe {
         let mut cursor = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor);
         let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
@@ -730,11 +772,15 @@ pub fn open() {
         GetMonitorInfoW(monitor, &mut info);
         let (mut dpi_x, mut dpi_y) = (96, 96);
         GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
-        let (w, h) = window_size(dpi_x);
         let work = info.rcWork;
+        // Larger text enlarges the whole window, as long as it fits the screen.
+        let fit = |screen: i32, size: f32| screen as f32 / (size * dpi_x as f32 / 96.0);
+        let room = fit(work.right - work.left, WIDTH).min(fit(work.bottom - work.top, HEIGHT));
+        let zoom = theme::text_scale().min(room * 0.95).max(1.0);
+        let (w, h) = window_size(dpi_x, zoom);
         let x = work.left + (work.right - work.left - w).max(0) / 2;
         let y = work.top + (work.bottom - work.top - h).max(0) / 2;
-        (x, y, w, h)
+        (x, y, w, h, zoom)
     };
 
     let title = wide("CoolerCast");
@@ -758,12 +804,13 @@ pub fn open() {
         return;
     }
 
-    let glass = enable_backdrop(hwnd);
+    let glass = theme::transparency_allowed() && enable_backdrop(hwnd);
     let theme = Theme::current(glass);
     let status = crate::tray::current_status();
     let state = Settings {
         hwnd,
-        scale: unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0,
+        scale: unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0 * zoom,
+        zoom,
         config: status
             .as_ref()
             .map(|s| s.config.clone())
@@ -773,7 +820,7 @@ pub fn open() {
         unsent: Vec::new(),
         autostart: autostart::enabled(),
         update: UpdateState::Idle,
-        page: Page::Overview,
+        page: LAST_PAGE.get(),
         hits: Vec::new(),
         hover: None,
         pressed: None,
@@ -813,9 +860,9 @@ pub fn update(status: Option<&Status>) {
     });
 }
 
-/// Window size, frame included, for a monitor DPI.
-fn window_size(dpi: u32) -> (i32, i32) {
-    let scale = dpi as f32 / 96.0;
+/// Window size, frame included, for a monitor DPI and zoom.
+fn window_size(dpi: u32, zoom: f32) -> (i32, i32) {
+    let scale = dpi as f32 / 96.0 * zoom;
     let mut rect = RECT {
         left: 0,
         top: 0,
@@ -943,8 +990,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_LBUTTONDOWN => {
             let (x, y) = mouse_pos(lparam);
+            let shift = wparam & MK_SHIFT != 0;
             unsafe { SetCapture(hwnd) };
-            let effect = with(|s| s.mouse_down(x, y)).unwrap_or(Effect::None);
+            let effect = with(|s| s.mouse_down(x, y, shift)).unwrap_or(Effect::None);
             run(effect);
         }
         WM_LBUTTONUP => {
@@ -991,7 +1039,7 @@ unsafe extern "system" fn window_proc(
         WM_DPICHANGED => {
             let dpi = u32::from(wparam as u16);
             with(|s| {
-                s.scale = dpi as f32 / 96.0;
+                s.scale = dpi as f32 / 96.0 * s.zoom;
                 s.invalidate();
             });
             // The suggested rectangle keeps the window under the cursor while dragging.
@@ -1147,7 +1195,7 @@ impl Settings {
         }
     }
 
-    fn mouse_down(&mut self, x: f32, y: f32) -> Effect {
+    fn mouse_down(&mut self, x: f32, y: f32, shift: bool) -> Effect {
         let Some(hit) = self.hit_test(x, y) else {
             return Effect::None;
         };
@@ -1160,7 +1208,10 @@ impl Settings {
         match hit.part {
             Part::Minus | Part::Plus => {
                 unsafe { SetTimer(self.hwnd, TIMER_REPEAT, REPEAT_DELAY_MS, None) };
-                self.step(hit.control, hit.part == Part::Plus);
+                // Shift-click takes ten steps at once, for the wide ranges.
+                for _ in 0..if shift { 10 } else { 1 } {
+                    self.step(hit.control, hit.part == Part::Plus);
+                }
                 Effect::None
             }
             _ => Effect::None,
@@ -1226,7 +1277,7 @@ impl Settings {
             VK_LEFT | VK_DOWN => false,
             VK_SPACE | VK_RETURN => {
                 let part = match control {
-                    Control::Update => Part::Button,
+                    Control::Update | Control::UseCustom => Part::Button,
                     // Enter confirms a typed number right away.
                     Control::CustomValue if key == VK_RETURN => {
                         self.typing = false;
@@ -1250,6 +1301,7 @@ impl Settings {
                     i.saturating_sub(1)
                 };
                 self.page = PAGES[next];
+                LAST_PAGE.set(self.page);
                 self.set_focus(Some(Control::Nav(self.page)));
                 Effect::None
             }
@@ -1323,8 +1375,13 @@ impl Settings {
         match (hit.control, hit.part) {
             (Control::Nav(page), _) => {
                 self.page = page;
+                LAST_PAGE.set(page);
                 self.invalidate();
                 Effect::None
+            }
+            (Control::UseCustom, _) => {
+                self.config.mode = Mode::Custom;
+                self.send_with(Control::Mode)
             }
             (Control::Autostart, _) => Effect::Autostart(!self.autostart),
             (Control::Update, _) => match &self.update {
@@ -1418,29 +1475,35 @@ impl Settings {
 
     fn draw_sidebar(&mut self, c: &Canvas) {
         let t = self.theme;
-        // Logo: a little cooler display.
-        let logo = Rect::new(20.0, 24.0, 36.0, 36.0);
-        c.fill_round_rect_v(logo, 9.0, t.accent, t.accent.alpha(0xB0));
-        c.text(
-            "°C",
-            logo,
-            14.0,
-            Weight::Semibold,
-            t.on_accent,
-            Align::Center,
-        );
+        draw_app_icon(c, Rect::new(20.0, 24.0, 40.0, 40.0));
         c.text(
             "CoolerCast",
-            Rect::new(66.0, 24.0, 150.0, 20.0),
-            15.0,
+            Rect::new(72.0, 22.0, SIDEBAR_W - 80.0, 22.0),
+            16.0,
+            Weight::Semibold,
+            t.text,
+            Align::Left,
+        );
+        // The service state, where it is always visible.
+        let (level, title, detail) = status_lines(self.status.as_ref());
+        let dot = match level {
+            Level::Ok => t.ok,
+            Level::Warn => t.warn,
+            Level::Error => t.alarm,
+        };
+        c.fill_circle(76.0, 53.0, 4.0, dot);
+        c.text(
+            &title,
+            Rect::new(86.0, 44.0, SIDEBAR_W - 94.0, 18.0),
+            12.5,
             Weight::Semibold,
             t.text,
             Align::Left,
         );
         c.text(
-            &format!("Version {}", env!("CARGO_PKG_VERSION")),
-            Rect::new(66.0, 43.0, 150.0, 16.0),
-            11.5,
+            &detail,
+            Rect::new(72.0, 63.0, SIDEBAR_W - 80.0, 18.0),
+            12.0,
             Weight::Regular,
             t.text_dim,
             Align::Left,
@@ -1498,33 +1561,6 @@ impl Settings {
             }
             self.hits.push((hit, r));
         }
-
-        // Service state at the bottom.
-        let (level, title, detail) = status_lines(self.status.as_ref());
-        let dot = match level {
-            Level::Ok => t.ok,
-            Level::Warn => t.warn,
-            Level::Error => t.alarm,
-        };
-        let card = Rect::new(10.0, HEIGHT - 76.0, SIDEBAR_W - 20.0, 60.0);
-        self.draw_card(c, card);
-        c.fill_circle(card.x + 18.0, card.y + 21.0, 4.5, dot);
-        c.text(
-            &title,
-            Rect::new(card.x + 30.0, card.y + 11.0, card.w - 40.0, 20.0),
-            13.0,
-            Weight::Semibold,
-            t.text,
-            Align::Left,
-        );
-        c.text(
-            &detail,
-            Rect::new(card.x + 30.0, card.y + 31.0, card.w - 40.0, 18.0),
-            12.0,
-            Weight::Regular,
-            t.text_dim,
-            Align::Left,
-        );
     }
 
     /// The overview: the display (or every value, for displays that show several), what it
@@ -1554,17 +1590,6 @@ impl Settings {
             let row = Rect::new(PAGE_X, y, PAGE_W, SETTING_H);
             self.draw_setting(c, row, control, title, description);
             y = row.bottom() + SETTING_GAP;
-        }
-        if page == Page::Custom && self.config.mode != Mode::Custom {
-            let t = self.theme;
-            c.text(
-                "The display shows these values only when Show (Display page) is set to Custom.",
-                Rect::new(PAGE_X + 2.0, y + 8.0, PAGE_W, 18.0),
-                12.5,
-                Weight::Regular,
-                t.text_dim,
-                Align::Left,
-            );
         }
     }
 
@@ -1653,6 +1678,15 @@ impl Settings {
         if let Some(f) = status.and_then(|s| s.cpu_freq) {
             values.push(("CPU clock", format!("{f:.0} MHz"), t.text));
         }
+        // With only the CPU measured, the peaks of the chart are worth a glance too.
+        if values.len() == 2
+            && let Some(s) = status.filter(|s| !s.history.is_empty())
+        {
+            let peak_temp = s.history.iter().filter_map(|h| h.cpu_temp).reduce(f32::max);
+            let peak_usage = s.history.iter().map(|h| h.cpu_usage).reduce(f32::max);
+            values.push(("Highest temperature", temp(peak_temp), t.text));
+            values.push(("Highest usage", percent(peak_usage), t.text));
+        }
         let columns = if preview { 2 } else { 3 };
         let rows = values.len().div_ceil(columns).max(1);
         let w = (card.right() - 20.0 - values_x) / columns as f32;
@@ -1694,7 +1728,7 @@ impl Settings {
 
         // Legend, right-aligned.
         let mut lx = card.right() - 16.0;
-        for (label, color) in [("Usage", t.usage_line), ("Temperature", t.accent)] {
+        for (label, color) in [("Usage", t.usage_line), ("Temperature", t.temp_line)] {
             let w = c.measure(label, 12.0, Weight::Regular);
             lx -= w;
             c.text(
@@ -1760,6 +1794,14 @@ impl Settings {
         if self.config.alarm && self.online() {
             let y = y_of(f32::from(self.config.alarm_threshold));
             c.dashed_line(plot.x, y, plot.right(), y, 1.0, t.alarm.alpha(0xB0));
+            c.text(
+                "Alarm",
+                Rect::new(plot.right() - 60.0, y - 17.0, 56.0, 14.0),
+                11.0,
+                Weight::Regular,
+                t.text_dim,
+                Align::Right,
+            );
         }
 
         let history = self.status.as_ref().map_or(&[][..], |s| &s.history[..]);
@@ -1809,8 +1851,8 @@ impl Settings {
         let mut area = points.to_vec();
         area.push((last, baseline));
         area.push((first, baseline));
-        c.fill_polygon(&area, self.theme.accent.alpha(0x30));
-        c.polyline(points, 2.0, self.theme.accent);
+        c.fill_polygon(&area, self.theme.temp_line.alpha(0x30));
+        c.polyline(points, 2.0, self.theme.temp_line);
     }
 
     /// One setting card: title and description on the left, the control on the right.
@@ -1841,6 +1883,7 @@ impl Settings {
                 self.draw_switch(c, control, control.is_on(&config), right, cy, enabled)
             }
             Control::Update => self.draw_update_button(c, right, cy),
+            Control::UseCustom => self.draw_button(c, control, "Show it", right, cy, enabled),
             Control::CustomValue => {
                 let text = config.custom_value.to_string();
                 self.draw_stepper(c, control, &text, right, cy, enabled)
@@ -1997,6 +2040,45 @@ impl Settings {
         let area = Rect::new(label.x, track.y, track.right() - label.x, track.h);
         self.hits.push((hit, area.inset(0.0, -6.0)));
         track
+    }
+
+    /// A plain push button, right-aligned at `right`.
+    fn draw_button(
+        &mut self,
+        c: &Canvas,
+        control: Control,
+        label: &str,
+        right: f32,
+        cy: f32,
+        enabled: bool,
+    ) -> Rect {
+        let t = self.theme;
+        let w = (c.measure(label, 13.0, Weight::Regular) + 32.0).round();
+        let r = Rect::new(right - w, cy - 15.0, w, 30.0);
+        let hit = Hit {
+            control,
+            part: Part::Button,
+        };
+        let (hovered, pressed) = self.state(hit);
+        let fill = if pressed {
+            t.border
+        } else if hovered && enabled {
+            t.control_hover
+        } else {
+            t.control
+        };
+        c.fill_round_rect(r, 6.0, fade(fill, enabled));
+        c.stroke_round_rect(r, 6.0, 1.0, fade(t.border, enabled));
+        c.text(
+            label,
+            r,
+            13.0,
+            Weight::Regular,
+            fade(t.text, enabled),
+            Align::Center,
+        );
+        self.hits.push((hit, r));
+        r
     }
 
     /// The update button, right-aligned at `right`; filled with the accent when a new version
