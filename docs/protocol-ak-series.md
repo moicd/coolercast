@@ -16,8 +16,9 @@ without the `K` (for example `A400-DIGITAL`) and declare no report ID.
 ## Transport
 
 The host sends one 64-byte output report per update over the interrupt OUT endpoint
-(`WriteFile` on the HID handle). The device never answers. The official app refreshes the display
-about once per second; the display keeps the last value it received.
+(`WriteFile` on the HID handle). The device never answers. The display goes blank a few seconds
+after the last report, so the host has to keep sending: the official app refreshes it about once
+per second, and so do CoolerCast and `coolercast probe`.
 
 ## Packet layout
 
@@ -63,12 +64,40 @@ code path.
 For example, an `A400-DIGITAL` (PID `0x0001`) reports report ID `0` and an `OutputReportByteLength`
 of 65.
 
-## Unknown values
+## Undocumented digit values
 
-Nothing is known about values outside the ranges above: digit values above 9, other mode bytes,
-bar level 0 or above 10. CoolerCast never sends them, except through `coolercast probe`, which
-exists to find out what the firmware does with them (for example blank digits, letters or other
-symbols). Results will be added here.
+CoolerCast never sends digit values above 9, except through `coolercast probe`. A scan of every
+value from 10 to 255 on an AK400 DIGITAL SE (`A400-DIGITAL`), with the same value in the three
+digits, found these shapes; every other value showed nothing recognizable (segments are named
+a–g, a at the top, clockwise, g in the middle):
+
+| Value | Shape |
+|---|---|
+| 10 | Blank |
+| 27 | L |
+| 34, 46, 50 | h |
+| 43 | C |
+| 55 | a (top dash) |
+| 57, 95 | d (bottom dash) |
+| 90 | One vertical stroke |
+| 93 | a and d |
+| 99 | d and g |
+| 124 | a, d, e and g (an E without its upper left stroke) |
+| 211 | g (middle dash) |
+| 228 | 3 (a, b, c, d and g) |
+| 250 | h |
+
+- The shapes look like data read past the end of the digit table rather than a font: they have no
+  order, the same shape repeats, and there is no G, P or U, so words such as `CPU` or `GPU`
+  cannot be written. Each digit takes one value, so segments cannot be combined either.
+- The shape does not depend on the mode byte: values 43, 27 and 124 look the same with the °C,
+  °F and % symbols.
+- [Another user](https://github.com/raghulkrishna/deepcool-ak620-digital-linux/issues/9) reports
+  that 180 draws a minus sign. It was not noticed in this scan, so firmware versions may differ.
+- Values 10 to 222 were scanned with a `probe` that sent each value once; since the display blanks
+  a few seconds later, a shape may have been missed there. `probe` now refreshes the display while
+  it waits.
+- Other mode bytes and bar levels 0 or above 10 are still unexplored.
 
 CoolerCast's `custom` mode only uses the documented values: a number from 0 to 999, one of the
 three symbols (modes `19`, `35` and `76`) and a bar level from 1 to 10.

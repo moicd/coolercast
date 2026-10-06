@@ -8,6 +8,7 @@ mod service;
 use std::error::Error;
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -414,8 +415,8 @@ fn probe(args: &[String]) -> Result {
         let payload: [u8; ak::PAYLOAD_LEN] = bytes
             .try_into()
             .map_err(|_| "raw expects 6 bytes: mode bar digit digit digit alarm")?;
-        send(payload)?;
-        println!("sent {payload:?}; the display keeps it until the next report");
+        println!("showing {payload:?}; press Enter to stop");
+        show_until_input(&mut send, payload, &stdin_lines())?;
         return Ok(());
     }
 
@@ -429,16 +430,14 @@ fn probe(args: &[String]) -> Result {
     );
     let mut notes: Vec<(u8, [u8; ak::PAYLOAD_LEN], String)> = Vec::new();
     let mut value = from;
-    let stdin = io::stdin();
+    let input = stdin_lines();
     loop {
         let payload = field.payload(value);
-        send(payload)?;
         print!("{field:?} = {value:<3}  payload {payload:?} > ");
         io::stdout().flush()?;
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line)? == 0 {
+        let Some(line) = show_until_input(&mut send, payload, &input)? else {
             break;
-        }
+        };
         match line.trim() {
             "q" => break,
             "-" => value = value.saturating_sub(1).max(from),
@@ -469,6 +468,41 @@ fn probe(args: &[String]) -> Result {
     }
     println!("\nDone. Start the service again with {START_HINT}.");
     Ok(())
+}
+
+/// How often `probe` repeats what it shows: the display blanks a few seconds after the last
+/// report.
+const PROBE_REFRESH: Duration = Duration::from_secs(1);
+
+/// Lines typed on stdin, read on a background thread so the display can be refreshed while
+/// waiting for them.
+fn stdin_lines() -> Receiver<String> {
+    let (lines, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for line in io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+/// Sends `payload` every [`PROBE_REFRESH`] until a line is typed; `None` at the end of the input.
+fn show_until_input(
+    send: &mut impl FnMut([u8; ak::PAYLOAD_LEN]) -> Result,
+    payload: [u8; ak::PAYLOAD_LEN],
+    input: &Receiver<String>,
+) -> Result<Option<String>> {
+    loop {
+        send(payload)?;
+        match input.recv_timeout(PROBE_REFRESH) {
+            Ok(line) => return Ok(Some(line)),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(None),
+        }
+    }
 }
 
 /// Loads the settings, creates the engine and serves IPC requests for it. The IPC result is
