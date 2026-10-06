@@ -41,6 +41,16 @@ impl Color {
     pub const fn alpha(self, a: u8) -> Self {
         Self((self.0 & 0x00FF_FFFF) | (a as u32) << 24)
     }
+
+    /// `self` blended toward `other` by `t` (0 keeps `self`, 1 gives `other`), alpha included.
+    pub fn mix(self, other: Color, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let channel = |shift: u32| {
+            let (a, b) = ((self.0 >> shift) & 0xFF, (other.0 >> shift) & 0xFF);
+            ((a as f32 + (b as f32 - a as f32) * t).round() as u32) << shift
+        };
+        Self(channel(24) | channel(16) | channel(8) | channel(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -113,6 +123,8 @@ pub struct Canvas {
     /// exists.
     styles: [i32; 3],
     format: *mut GpStringFormat,
+    /// Like `format`, but wrapping at word boundaries and starting at the top.
+    wrap_format: *mut GpStringFormat,
     fonts: RefCell<Vec<Font>>,
 }
 
@@ -213,6 +225,11 @@ impl Canvas {
             GdipSetStringFormatLineAlign(format, StringAlignmentCenter);
             GdipSetStringFormatTrimming(format, StringTrimmingEllipsisCharacter);
         }
+        let mut wrap_format = ptr::null_mut();
+        unsafe {
+            GdipCloneStringFormat(generic, &mut wrap_format);
+            GdipSetStringFormatTrimming(wrap_format, StringTrimmingEllipsisWord);
+        }
         Self {
             g,
             bitmap,
@@ -220,6 +237,7 @@ impl Canvas {
             families: [regular, semibold, icons],
             styles: [FontStyleRegular, semibold_style, FontStyleRegular],
             format,
+            wrap_format,
             fonts: RefCell::new(Vec::new()),
         }
     }
@@ -256,11 +274,17 @@ impl Canvas {
     }
 
     fn rounded_path(&self, r: Rect, radius: f32) -> *mut GpPath {
+        let mut path = ptr::null_mut();
+        unsafe { GdipCreatePath(FillModeAlternate, &mut path) };
+        self.add_rounded(path, r, radius);
+        path
+    }
+
+    /// Adds a rounded rectangle to `path` as a closed figure.
+    fn add_rounded(&self, path: *mut GpPath, r: Rect, radius: f32) {
         let r = self.r(r);
         let d = (self.s(radius) * 2.0).min(r.w).min(r.h);
-        let mut path = ptr::null_mut();
         unsafe {
-            GdipCreatePath(FillModeAlternate, &mut path);
             if d <= 0.0 {
                 GdipAddPathArc(path, r.x, r.y, 0.0, 0.0, 180.0, 90.0);
                 GdipAddPathArc(path, r.right(), r.y, 0.0, 0.0, 270.0, 90.0);
@@ -274,7 +298,29 @@ impl Canvas {
             }
             GdipClosePathFigure(path);
         }
-        path
+    }
+
+    /// A soft shadow around a rounded rectangle, falling slightly downwards. GDI+ has no blur, so
+    /// it stacks translucent rings; the rectangle itself is left untouched, so translucent glass
+    /// on top does not get darker.
+    pub fn shadow(&self, r: Rect, radius: f32, depth: f32, color: Color) {
+        const STEPS: u32 = 4;
+        let alpha = ((color.0 >> 24) / STEPS) as u8;
+        for i in 1..=STEPS {
+            let grow = depth * i as f32 / STEPS as f32;
+            let outer = Rect::new(
+                r.x - grow,
+                r.y - grow + depth * 0.4,
+                r.w + 2.0 * grow,
+                r.h + 2.0 * grow,
+            );
+            let path = self.rounded_path(outer, radius + grow);
+            self.add_rounded(path, r, radius);
+            self.with_brush(color.alpha(alpha), |b| unsafe {
+                GdipFillPath(self.g, b, path);
+            });
+            unsafe { GdipDeletePath(path) };
+        }
     }
 
     pub fn fill_round_rect(&self, r: Rect, radius: f32, color: Color) {
@@ -466,6 +512,58 @@ impl Canvas {
         });
     }
 
+    /// Draws text wrapped at word boundaries, from the top of `r`, left-aligned.
+    pub fn text_wrapped(&self, text: &str, r: Rect, size: f32, weight: Weight, color: Color) {
+        let font = self.font(size, weight);
+        let text16: Vec<u16> = text.encode_utf16().collect();
+        let layout = self.r(r);
+        let rect = RectF {
+            X: layout.x,
+            Y: layout.y,
+            Width: layout.w,
+            Height: layout.h,
+        };
+        self.with_brush(color, |b| unsafe {
+            GdipDrawString(
+                self.g,
+                text16.as_ptr(),
+                text16.len() as i32,
+                font,
+                &rect,
+                self.wrap_format,
+                b,
+            );
+        });
+    }
+
+    /// How many lines `text` takes when wrapped to `width`.
+    pub fn lines(&self, text: &str, size: f32, weight: Weight, width: f32) -> u32 {
+        let font = self.font(size, weight);
+        let text16: Vec<u16> = text.encode_utf16().collect();
+        let layout = RectF {
+            X: 0.0,
+            Y: 0.0,
+            Width: self.s(width),
+            Height: 10_000.0,
+        };
+        let mut bounds = RectF::default();
+        let mut lines = 0;
+        unsafe {
+            GdipMeasureString(
+                self.g,
+                text16.as_ptr(),
+                text16.len() as i32,
+                font,
+                &layout,
+                self.wrap_format,
+                &mut bounds,
+                ptr::null_mut(),
+                &mut lines,
+            );
+        }
+        lines.max(1) as u32
+    }
+
     /// Width of `text` in device-independent pixels.
     pub fn measure(&self, text: &str, size: f32, weight: Weight) -> f32 {
         let font = self.font(size, weight);
@@ -502,6 +600,7 @@ impl Drop for Canvas {
                 GdipDeleteFont(font.raw);
             }
             GdipDeleteStringFormat(self.format);
+            GdipDeleteStringFormat(self.wrap_format);
             // Fallbacks share the regular family: delete each one once.
             for (i, &family) in self.families.iter().enumerate() {
                 if !self.families[..i].contains(&family) {
@@ -513,5 +612,20 @@ impl Drop for Canvas {
                 GdipDisposeImage(self.bitmap.cast());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mix_blends_every_channel() {
+        let black = Color::rgb(0, 0, 0);
+        let white = Color::rgb(0xFF, 0xFF, 0xFF);
+        assert_eq!(black.mix(white, 0.0), black);
+        assert_eq!(black.mix(white, 1.0), white);
+        assert_eq!(black.mix(white, 0.5), Color::rgb(0x80, 0x80, 0x80));
+        assert_eq!(white.alpha(0).mix(white, 0.5), white.alpha(0x80));
     }
 }

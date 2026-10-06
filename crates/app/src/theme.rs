@@ -8,7 +8,9 @@ use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Graphics::Gdi::GetSysColor;
 use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
-use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+};
 
 use crate::gfx::Color;
 
@@ -42,6 +44,17 @@ pub struct Theme {
     pub temp_line: Color,
     pub usage_line: Color,
     pub grid: Color,
+    /// Soft shadow under cards, panels and raised controls.
+    pub shadow: Color,
+    /// The pill under the item the mouse is over.
+    pub hover: Color,
+    /// The pill of the selected sidebar page, tinted with the accent.
+    pub selection: Color,
+    /// The raised thumb of a segmented control, and the text on it.
+    pub thumb: Color,
+    pub on_thumb: Color,
+    /// The round knob of a switch.
+    pub knob: Color,
 }
 
 impl Theme {
@@ -81,6 +94,12 @@ impl Theme {
             temp_line: Color::rgb(0xFB, 0xA9, 0x4C),
             usage_line: Color::rgb(0x93, 0xC5, 0xFD),
             grid: Color::rgb(0x36, 0x36, 0x36),
+            shadow: Color::rgb(0, 0, 0).alpha(0x60),
+            hover: Color::rgb(0xFF, 0xFF, 0xFF).alpha(0x12),
+            selection: Color::rgb(0x2D, 0xD4, 0xBF).alpha(0x30),
+            thumb: Color::rgb(0x5C, 0x5C, 0x5C),
+            on_thumb: Color::rgb(0xF2, 0xF2, 0xF2),
+            knob: Color::rgb(0xFF, 0xFF, 0xFF),
         }
     }
 
@@ -108,6 +127,12 @@ impl Theme {
             temp_line: Color::rgb(0xC2, 0x41, 0x0C),
             usage_line: Color::rgb(0x25, 0x63, 0xEB),
             grid: Color::rgb(0xEC, 0xEC, 0xEC),
+            shadow: Color::rgb(0, 0, 0).alpha(0x24),
+            hover: Color::rgb(0, 0, 0).alpha(0x0A),
+            selection: Color::rgb(0x0F, 0x76, 0x6E).alpha(0x22),
+            thumb: Color::rgb(0xFF, 0xFF, 0xFF),
+            on_thumb: Color::rgb(0x1A, 0x1A, 0x1A),
+            knob: Color::rgb(0xFF, 0xFF, 0xFF),
         }
     }
 
@@ -131,6 +156,9 @@ impl Theme {
                 control: white.alpha(0x14),
                 control_hover: white.alpha(0x26),
                 grid: white.alpha(0x14),
+                hover: white.alpha(0x16),
+                selection: self.accent.alpha(0x3C),
+                thumb: white.alpha(0x38),
                 ..self
             }
         } else {
@@ -145,6 +173,10 @@ impl Theme {
                 control: black.alpha(0x0C),
                 control_hover: black.alpha(0x18),
                 grid: black.alpha(0x10),
+                // Light glass is nearly white already: hovering darkens it a little.
+                hover: black.alpha(0x0C),
+                selection: self.accent.alpha(0x2A),
+                thumb: white.alpha(0xF2),
                 ..self
             }
         }
@@ -183,6 +215,13 @@ impl Theme {
             temp_line: highlight,
             usage_line: link,
             grid: sys(COLOR_GRAYTEXT),
+            // No shadows or translucency: shapes are outlined instead.
+            shadow: window.alpha(0),
+            hover: highlight.alpha(0x60),
+            selection: highlight,
+            thumb: highlight,
+            on_thumb: on_highlight,
+            knob: on_highlight,
         }
     }
 
@@ -218,6 +257,20 @@ pub fn transparency_allowed() -> bool {
 pub fn text_scale() -> f32 {
     registry_dword(r"Software\Microsoft\Accessibility", "TextScaleFactor")
         .map_or(1.0, |percent| percent.clamp(100, 225) as f32 / 100.0)
+}
+
+/// Settings › Accessibility › Visual effects › Animation effects.
+pub fn animations_enabled() -> bool {
+    let mut on = 1i32;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut on as *mut i32).cast(),
+            0,
+        )
+    };
+    ok == 0 || on != 0
 }
 
 fn high_contrast() -> bool {

@@ -7,6 +7,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod anim;
+#[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
 mod gfx;

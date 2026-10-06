@@ -71,4 +71,6 @@ Read `.agents/skills/rust-best-practices/SKILL.md` before writing or reviewing R
   update `docs/protocol-*.md` when a protocol changes.
 - Do not copy code from GPL projects. Protocol facts are fine; cite the source in `docs/`.
 - Do not ship DeepCool assets (logos, fonts, images, videos).
+- Every text the Windows app shows lives in `crates/app/src/i18n`; a new string goes into every
+  language file (the build fails otherwise) and placeholders stay `{}`.
 - Conventional commits (`feat(core): ...`, `fix(tray): ...`, `docs: ...`).

@@ -11,9 +11,9 @@ service written in Rust, plus an optional tray icon and settings window on Windo
 | | Official DeepCool app 1.2.14 | CoolerCast 0.6 |
 |---|---|---|
 | Processes | 16 (plus 3 services and 4 drivers) | 1 service + optional tray icon |
-| RAM | ~1 GB working set | 0.8 MB private (service), 2.1 MB (app with its window open) |
+| RAM | ~1 GB working set | 0.8 MB private (service), 2.5 MB (app with its window open) |
 | CPU while idle | several Chromium processes awake | 0 % (wakes once per second) |
-| Install size | ~1.2 GB | 1.2 MB |
+| Install size | ~1.2 GB | 1.3 MB |
 | Platforms | Windows | Windows and Linux |
 
 <sub>Measured on a Windows 11 test system. RAM for CoolerCast is the private working set shown by
@@ -46,10 +46,11 @@ These links always point to the latest version. Older versions, release notes an
 - Turns the display off while the PC is locked or its screen is off (Windows), or every night.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a service: starts with the PC, no window needed.
-- Windows: optional tray icon that shows the temperature, and a settings window in the style of the
-  Windows 11 settings, with a live preview of the cooler display and the last two minutes of
-  temperature and usage (translucent Acrylic glass on Windows 11). It follows the Windows text
-  size, high contrast and transparency effects settings.
+- Windows: optional tray icon that shows the temperature, and a settings window in a liquid glass
+  style (rounded, translucent surfaces over Acrylic on Windows 11; the selection slides between
+  pages and a highlight follows the mouse), with a live preview of the cooler display and the last
+  two minutes of temperature and usage. It follows the Windows text size, high contrast,
+  transparency and animation effects settings.
 - The Windows app speaks English, Spanish, Portuguese, French, German, Italian, Polish, Turkish,
   Russian, Chinese, Japanese and Korean. It follows the Windows display language, or the one picked
   under **General → Language** (kept per user in `HKCU\Software\CoolerCast`).
