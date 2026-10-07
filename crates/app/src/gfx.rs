@@ -317,29 +317,6 @@ impl Canvas {
         }
     }
 
-    /// A soft shadow around a rounded rectangle, falling slightly downwards. GDI+ has no blur, so
-    /// it stacks translucent rings; the rectangle itself is left untouched, so translucent glass
-    /// on top does not get darker.
-    pub fn shadow(&self, r: Rect, radius: f32, depth: f32, color: Color) {
-        const STEPS: u32 = 4;
-        let alpha = ((color.0 >> 24) / STEPS) as u8;
-        for i in 1..=STEPS {
-            let grow = depth * i as f32 / STEPS as f32;
-            let outer = Rect::new(
-                r.x - grow,
-                r.y - grow + depth * 0.4,
-                r.w + 2.0 * grow,
-                r.h + 2.0 * grow,
-            );
-            let path = self.rounded_path(outer, radius + grow);
-            self.add_rounded(path, r, radius);
-            self.with_brush(color.alpha(alpha), |b| unsafe {
-                GdipFillPath(self.g, b, path);
-            });
-            unsafe { GdipDeletePath(path) };
-        }
-    }
-
     pub fn fill_round_rect(&self, r: Rect, radius: f32, color: Color) {
         let path = self.rounded_path(r, radius);
         self.with_brush(color, |b| unsafe {
@@ -380,36 +357,6 @@ impl Canvas {
         let path = self.rounded_path(r, radius);
         self.with_gradient(self.r(r), top, bottom, |b| unsafe {
             GdipFillPath(self.g, b, path);
-        });
-        unsafe { GdipDeletePath(path) };
-    }
-
-    /// Fills a rounded rectangle with `color` at the top, fading out at `fraction` of its height.
-    /// The fade keeps the outline of the whole rectangle, round ends included.
-    pub fn fill_round_rect_fade(&self, r: Rect, radius: f32, color: Color, fraction: f32) {
-        let path = self.rounded_path(r, radius);
-        let device = self.r(r);
-        // Where the fade ends on the gradient, which `with_gradient` overscans by one pixel.
-        let end = (1.0 + fraction * device.h) / (device.h + 2.0);
-        let (factors, positions) = ([0.0, 1.0, 1.0], [0.0, end, 1.0]);
-        self.with_gradient(device, color, color.alpha(0), |b| unsafe {
-            GdipSetLineBlend(b.cast(), factors.as_ptr(), positions.as_ptr(), 3);
-            GdipFillPath(self.g, b, path);
-        });
-        unsafe { GdipDeletePath(path) };
-    }
-
-    /// Outlines a rounded rectangle with a vertical gradient, inside the rectangle.
-    pub fn stroke_round_rect_v(&self, r: Rect, radius: f32, width: f32, top: Color, bottom: Color) {
-        if top == bottom {
-            return self.stroke_round_rect(r, radius, width, top);
-        }
-        let path = self.rounded_path(r.inset(width / 2.0, width / 2.0), radius);
-        self.with_gradient(self.r(r), top, bottom, |b| unsafe {
-            let mut pen = ptr::null_mut();
-            GdipCreatePen2(b, self.s(width), UnitPixel, &mut pen);
-            GdipDrawPath(self.g, pen, path);
-            GdipDeletePen(pen);
         });
         unsafe { GdipDeletePath(path) };
     }
