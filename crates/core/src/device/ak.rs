@@ -15,9 +15,10 @@ pub const PAYLOAD_LEN: usize = 6;
 pub const REPORT_ID: u8 = 16;
 
 const MODE_INIT: u8 = 170;
-const MODE_CELSIUS: u8 = 19;
-const MODE_FAHRENHEIT: u8 = 35;
-const MODE_USAGE: u8 = 76;
+pub(super) const MODE_CELSIUS: u8 = 19;
+pub(super) const MODE_FAHRENHEIT: u8 = 35;
+/// Lights the percent symbol; the LS series shows the power in watts instead.
+pub(super) const MODE_USAGE: u8 = 76;
 
 pub type Packet = [u8; PACKET_LEN];
 
@@ -32,30 +33,35 @@ pub fn init_packet(report_id: u8) -> Packet {
 pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
     // The bar always follows the Celsius / percent scale so it means the same in both units.
     let (mode, value, bar) = match reading {
-        Reading::Temperature { celsius, unit } => {
-            let mode = match unit {
-                Unit::Celsius => MODE_CELSIUS,
-                Unit::Fahrenheit => MODE_FAHRENHEIT,
-            };
-            (
-                mode,
-                display_value(unit.from_celsius(celsius)),
-                bar_level(celsius),
-            )
-        }
+        Reading::Temperature { celsius, unit } => (
+            unit_mode(unit),
+            display_value(unit.from_celsius(celsius)),
+            bar_level(celsius),
+        ),
         Reading::Usage { percent } => (MODE_USAGE, display_value(percent), bar_level(percent)),
         // There is no power symbol; `Update::reading_for` sends the temperature instead.
         Reading::Power { watts } => (MODE_USAGE, display_value(watts), bar_level(watts)),
-        Reading::Custom { value, symbol, bar } => {
-            let mode = match symbol {
-                Symbol::Celsius => MODE_CELSIUS,
-                Symbol::Fahrenheit => MODE_FAHRENHEIT,
-                Symbol::Percent => MODE_USAGE,
-            };
-            (mode, value.min(999), bar.clamp(1, 10))
-        }
+        Reading::Custom { value, symbol, bar } => custom(value, symbol, bar),
     };
     raw_packet(report_id, payload(mode, bar, value, alarm))
+}
+
+/// The mode that lights the symbol of a temperature in `unit`.
+pub(super) fn unit_mode(unit: Unit) -> u8 {
+    match unit {
+        Unit::Celsius => MODE_CELSIUS,
+        Unit::Fahrenheit => MODE_FAHRENHEIT,
+    }
+}
+
+/// Mode, value and bar of a user-chosen value, limited to what the display can show.
+pub(super) fn custom(value: u16, symbol: Symbol, bar: u8) -> (u8, u16, u8) {
+    let mode = match symbol {
+        Symbol::Celsius => MODE_CELSIUS,
+        Symbol::Fahrenheit => MODE_FAHRENHEIT,
+        Symbol::Percent => MODE_USAGE,
+    };
+    (mode, value.min(999), bar.clamp(1, 10))
 }
 
 /// The six payload bytes: mode, bar, the three digits of `value` and the alarm flag.

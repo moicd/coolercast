@@ -7,20 +7,17 @@ use super::Reading;
 use super::ak::{self, PACKET_LEN, Packet};
 use crate::config::Symbol;
 
-const MODE_CELSIUS: u8 = 19;
-const MODE_USAGE: u8 = 76;
-
 pub fn packet(report_id: u8, reading: Reading, alarm: bool) -> Packet {
     let (mode, value) = match reading {
         // Always Celsius: the display has no Fahrenheit symbol.
-        Reading::Temperature { celsius, .. } => (MODE_CELSIUS, ak::display_value(celsius)),
-        Reading::Usage { percent } => (MODE_USAGE, ak::display_value(percent)),
+        Reading::Temperature { celsius, .. } => (ak::MODE_CELSIUS, ak::display_value(celsius)),
+        Reading::Usage { percent } => (ak::MODE_USAGE, ak::display_value(percent)),
         // There is no power symbol; `Update::reading_for` sends the temperature instead.
-        Reading::Power { watts } => (MODE_USAGE, ak::display_value(watts)),
+        Reading::Power { watts } => (ak::MODE_USAGE, ak::display_value(watts)),
         Reading::Custom { value, symbol, .. } => {
             let mode = match symbol {
-                Symbol::Celsius | Symbol::Fahrenheit => MODE_CELSIUS,
-                Symbol::Percent => MODE_USAGE,
+                Symbol::Celsius | Symbol::Fahrenheit => ak::MODE_CELSIUS,
+                Symbol::Percent => ak::MODE_USAGE,
             };
             (mode, value)
         }
