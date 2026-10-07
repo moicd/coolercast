@@ -19,6 +19,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 use windows_sys::Win32::System::Power::RegisterPowerSettingNotification;
+use windows_sys::Win32::UI::WindowsAndMessaging::DEVICE_NOTIFY_SERVICE_HANDLE;
 
 use crate::Result;
 
@@ -33,7 +34,6 @@ const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
 /// `GUID_CONSOLE_DISPLAY_STATE`: the console screen turned on, off or dimmed.
 const GUID_CONSOLE_DISPLAY_STATE: windows_sys::core::GUID =
     windows_sys::core::GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
-const DEVICE_NOTIFY_SERVICE_HANDLE: u32 = 1;
 
 define_windows_service!(ffi_service_main, service_main);
 

@@ -6,36 +6,23 @@
 
 use super::Reading;
 use super::ak::{self, Packet};
-use crate::config::{Symbol, Unit};
 
-const MODE_CELSIUS: u8 = 19;
-const MODE_FAHRENHEIT: u8 = 35;
-const MODE_POWER: u8 = 76;
+const MODE_POWER: u8 = ak::MODE_USAGE;
 
 /// A status report. The start-up report is the AK one ([`ak::init_packet`]).
 pub fn packet(report_id: u8, reading: Reading, cpu_usage: f32, alarm: bool) -> Packet {
-    let temperature_mode = |unit| match unit {
-        Unit::Celsius => MODE_CELSIUS,
-        Unit::Fahrenheit => MODE_FAHRENHEIT,
-    };
     let usage_bar = ak::bar_level(cpu_usage);
     let (mode, value, bar) = match reading {
         Reading::Temperature { celsius, unit } => (
-            temperature_mode(unit),
+            ak::unit_mode(unit),
             ak::display_value(unit.from_celsius(celsius)),
             usage_bar,
         ),
         Reading::Power { watts } => (MODE_POWER, ak::display_value(watts), usage_bar),
         // There is no usage symbol; `Update::reading_for` sends something else instead.
         Reading::Usage { percent } => (MODE_POWER, ak::display_value(percent), usage_bar),
-        Reading::Custom { value, symbol, bar } => {
-            let mode = match symbol {
-                Symbol::Celsius => MODE_CELSIUS,
-                Symbol::Fahrenheit => MODE_FAHRENHEIT,
-                Symbol::Percent => MODE_POWER,
-            };
-            (mode, value.min(999), bar.clamp(1, 10))
-        }
+        // Its percent mode is the power one.
+        Reading::Custom { value, symbol, bar } => ak::custom(value, symbol, bar),
     };
     ak::raw_packet(report_id, ak::payload(mode, bar, value, alarm))
 }
@@ -43,6 +30,7 @@ pub fn packet(report_id: u8, reading: Reading, cpu_usage: f32, alarm: bool) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Symbol, Unit};
 
     const REPORT_ID: u8 = 16;
 

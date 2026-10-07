@@ -201,7 +201,7 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
     let half = h / 2.0;
     // Horizontal and vertical segments as hexagons.
     let hseg = |sx: f32, sy: f32| {
-        vec![
+        [
             (sx + t / 2.0, sy),
             (sx + t, sy - t / 2.0),
             (sx + w - t, sy - t / 2.0),
@@ -211,7 +211,7 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
         ]
     };
     let vseg = |sx: f32, sy: f32, len: f32| {
-        vec![
+        [
             (sx, sy + t / 2.0),
             (sx + t / 2.0, sy + t),
             (sx + t / 2.0, sy + len - t),
@@ -235,10 +235,7 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
             continue;
         }
         for (dx, dy) in HALO {
-            let shifted: Vec<_> = points
-                .iter()
-                .map(|&(px, py)| (px + dx * k, py + dy * k))
-                .collect();
+            let shifted = points.map(|(px, py)| (px + dx * k, py + dy * k));
             c.fill_polygon(&shifted, LIT.alpha(0x16));
         }
         c.fill_polygon(points, LIT);

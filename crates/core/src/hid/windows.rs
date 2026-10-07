@@ -56,7 +56,7 @@ pub fn enumerate(vendor_ids: &[u16]) -> io::Result<Vec<DeviceInfo>> {
         let Some(path) = interface_path(set, &iface) else {
             continue;
         };
-        if let Some(info) = query(&path).filter(|d| vendor_ids.contains(&d.vendor_id)) {
+        if let Some(info) = query(&path, vendor_ids) {
             devices.push(info);
         }
     }
@@ -112,13 +112,15 @@ fn interface_path(
 }
 
 /// Reads attributes, strings and report layout of one collection without write access.
-fn query(path: &str) -> Option<DeviceInfo> {
+/// Collections of other vendors are skipped before the strings are requested: those are
+/// transfers to the device, and the service rescans every few seconds while a cooler is missing.
+fn query(path: &str, vendor_ids: &[u16]) -> Option<DeviceInfo> {
     let handle = open(path, 0, 0).ok()?;
     let h = handle.raw();
 
     let mut attrs: HIDD_ATTRIBUTES = unsafe { mem::zeroed() };
     attrs.Size = size_of::<HIDD_ATTRIBUTES>() as u32;
-    if !unsafe { HidD_GetAttributes(h, &mut attrs) } {
+    if !unsafe { HidD_GetAttributes(h, &mut attrs) } || !vendor_ids.contains(&attrs.VendorID) {
         return None;
     }
 
@@ -221,7 +223,7 @@ impl HidDevice {
         }
         Ok(Self {
             handle: open(&info.path, GENERIC_WRITE, FILE_FLAG_OVERLAPPED)?,
-            event: Event::new(true)?,
+            event: Event::new()?,
             buf: vec![0; info.output_report_len],
         })
     }

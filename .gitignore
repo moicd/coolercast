@@ -4,5 +4,6 @@
 *.log
 .vscode/
 .idea/
-# Agent-specific links created by autoskills; the skills live in .agents/
 .claude/
+.agents/
+skills-lock.json

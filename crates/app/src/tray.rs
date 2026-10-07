@@ -6,7 +6,7 @@ use std::{env, mem, ptr};
 
 use crate::i18n::{self, fill};
 use crate::{autostart, icon, window};
-use coolercast_core::config::{Bar, Mode, Source, Unit};
+use coolercast_core::config::{Bar, Config, Mode, Source, Unit};
 use coolercast_core::ipc::{self, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{
@@ -159,15 +159,14 @@ unsafe extern "system" fn window_proc(
         WM_OPEN_SETTINGS => window::open(),
         WM_DESTROY => {
             window::close();
-            APP.with(|app| {
-                if let Some(app) = app.borrow_mut().take() {
-                    unsafe {
-                        KillTimer(app.hwnd, TIMER_ID);
-                        Shell_NotifyIconW(NIM_DELETE, &notify_data(&app));
-                        DestroyIcon(app.icon);
-                    }
+            // Taken out first: Shell_NotifyIconW dispatches messages that borrow APP (see refresh).
+            if let Some(app) = APP.with(|app| app.borrow_mut().take()) {
+                unsafe {
+                    KillTimer(app.hwnd, TIMER_ID);
+                    Shell_NotifyIconW(NIM_DELETE, &notify_data(&app));
+                    DestroyIcon(app.icon);
                 }
-            });
+            }
             unsafe { PostQuitMessage(0) };
         }
         m if m == TASKBAR_CREATED.load(Ordering::Relaxed) && m != 0 => refresh(true),
@@ -214,9 +213,9 @@ pub fn current_status() -> Option<Status> {
 pub fn refresh(add: bool) {
     let status = ipc::query_status().ok();
     let window_open = window::is_open();
-    APP.with(|app| {
+    let data = APP.with(|app| {
         let mut app = app.borrow_mut();
-        let Some(app) = app.as_mut() else { return };
+        let app = app.as_mut()?;
         app.status = status.clone();
 
         let key = icon_content(app.status.as_ref());
@@ -228,7 +227,12 @@ pub fn refresh(add: bool) {
             app.icon = new_icon;
             app.icon_key = key;
         }
-        let data = notify_data(app);
+        Some(notify_data(app))
+    });
+    // Outside the borrow: Shell_NotifyIconW waits for Explorer and meanwhile dispatches the
+    // messages other threads send to this one (TaskbarCreated, tray icon clicks), whose handlers
+    // borrow APP again.
+    if let Some(data) = data {
         let interval = if window_open {
             REFRESH_MS_WINDOW
         } else {
@@ -237,9 +241,9 @@ pub fn refresh(add: bool) {
         unsafe {
             Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data);
             // Also restarts the timer, so the next poll is a full interval away.
-            SetTimer(app.hwnd, TIMER_ID, interval, None);
+            SetTimer(data.hWnd, TIMER_ID, interval, None);
         }
-    });
+    }
     window::update(status.as_ref());
 }
 
@@ -285,16 +289,19 @@ pub fn set_interactive(interactive: bool) {
 
 fn show_menu(hwnd: HWND) {
     // Copy what the menu needs: TrackPopupMenu runs a modal loop that re-enters window_proc.
-    let status = APP.with(|app| app.borrow().as_ref().and_then(|a| a.status.clone()));
+    let status = current_status();
+    let offline = Config::default();
+    let config = status.as_ref().map_or(&offline, |s| &s.config);
     let autostart = autostart::enabled();
     let tx = i18n::text();
     set_interactive(true);
 
     let command = unsafe {
         let menu = CreatePopupMenu();
+        // Only an enabled item shows its check mark: offline, the settings are unknown.
         let item = |menu: HMENU, id: usize, text: &str, checked: bool, enabled: bool| {
             let mut flags = MF_STRING;
-            if checked {
+            if checked && enabled {
                 flags |= MF_CHECKED;
             }
             if !enabled {
@@ -327,47 +334,16 @@ fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
 
         let online = status.is_some();
-        let config = status
-            .as_ref()
-            .map(|s| s.config.clone())
-            .unwrap_or_default();
-
         let modes = CreatePopupMenu();
-        item(
-            modes,
-            ID_MODE_TEMPERATURE,
-            tx.temperature,
-            online && config.mode == Mode::Temperature,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_USAGE,
-            tx.usage,
-            online && config.mode == Mode::Usage,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_AUTO,
-            tx.alternate,
-            online && config.mode == Mode::Auto,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_POWER,
-            tx.power_ls,
-            online && config.mode == Mode::Power,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_CUSTOM,
-            tx.custom_value,
-            online && config.mode == Mode::Custom,
-            online,
-        );
+        for (id, label, mode) in [
+            (ID_MODE_TEMPERATURE, tx.temperature, Mode::Temperature),
+            (ID_MODE_USAGE, tx.usage, Mode::Usage),
+            (ID_MODE_AUTO, tx.alternate, Mode::Auto),
+            (ID_MODE_POWER, tx.power_ls, Mode::Power),
+            (ID_MODE_CUSTOM, tx.custom_value, Mode::Custom),
+        ] {
+            item(modes, id, label, config.mode == mode, online);
+        }
         AppendMenuW(menu, MF_POPUP, modes as usize, wide(tx.display).as_ptr());
 
         let sources = CreatePopupMenu();
@@ -377,37 +353,23 @@ fn show_menu(hwnd: HWND) {
             (ID_SOURCE_AUTO, tx.alternate, Source::Auto),
             (ID_SOURCE_SMART, tx.gpu_while_busy, Source::Smart),
         ] {
-            item(
-                sources,
-                id,
-                label,
-                online && config.source == source,
-                online,
-            );
+            item(sources, id, label, config.source == source, online);
         }
         AppendMenuW(menu, MF_POPUP, sources as usize, wide(tx.device).as_ptr());
 
         let units = CreatePopupMenu();
-        item(
-            units,
-            ID_UNIT_CELSIUS,
-            tx.celsius,
-            online && config.unit == Unit::Celsius,
-            online,
-        );
-        item(
-            units,
-            ID_UNIT_FAHRENHEIT,
-            tx.fahrenheit,
-            online && config.unit == Unit::Fahrenheit,
-            online,
-        );
+        for (id, label, unit) in [
+            (ID_UNIT_CELSIUS, tx.celsius, Unit::Celsius),
+            (ID_UNIT_FAHRENHEIT, tx.fahrenheit, Unit::Fahrenheit),
+        ] {
+            item(units, id, label, config.unit == unit, online);
+        }
         AppendMenuW(menu, MF_POPUP, units as usize, wide(tx.unit).as_ptr());
         item(
             menu,
             ID_USAGE_BAR,
             tx.usage_bar,
-            online && config.bar == Bar::Usage,
+            config.bar == Bar::Usage,
             online,
         );
 
@@ -428,7 +390,7 @@ fn show_menu(hwnd: HWND) {
             ),
             (ID_OFF_NIGHT, night.as_str(), config.off_at_night),
         ] {
-            item(off, id, label, online && on, online);
+            item(off, id, label, on, online);
         }
         AppendMenuW(
             menu,
@@ -438,7 +400,7 @@ fn show_menu(hwnd: HWND) {
         );
 
         let alarm_label = fill(tx.alarm_at, &[&config.alarm_threshold.to_string()]);
-        item(menu, ID_ALARM, &alarm_label, online && config.alarm, online);
+        item(menu, ID_ALARM, &alarm_label, config.alarm, online);
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         item(menu, ID_AUTOSTART, tx.start_with_windows, autostart, true);
         item(menu, ID_EXIT, tx.exit, false, true);
@@ -461,10 +423,6 @@ fn show_menu(hwnd: HWND) {
     };
     set_interactive(window::is_open());
 
-    let config = status
-        .as_ref()
-        .map(|s| s.config.clone())
-        .unwrap_or_default();
     let toggle = |on: bool| if on { "off" } else { "on" };
     let setting = match command {
         ID_MODE_TEMPERATURE => Some(("mode", "temperature")),

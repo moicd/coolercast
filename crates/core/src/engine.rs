@@ -18,8 +18,12 @@ use crate::sensors::cpu_usage::CpuUsage;
 use crate::sensors::gpu::Gpu;
 use crate::{info, warn};
 
-/// How often to look for coolers while none is connected.
+/// How often to look for coolers while one is missing.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// How long after the start, or after losing a cooler, to keep looking for coolers although
+/// others work: a display that enumerates late, or comes back after a USB reset or a resume from
+/// sleep, takes a few seconds. With no cooler at all the search never ends.
+const RESCAN_WINDOW: Duration = Duration::from_secs(60);
 
 /// `source = "smart"` switches to the GPU above this usage...
 const SMART_GPU_ON: f32 = 50.0;
@@ -174,6 +178,7 @@ impl Engine {
         let mut coolers: Vec<Cooler> = Vec::new();
         let mut next_scan = Instant::now();
         let started = Instant::now();
+        let mut retry_until = started + RESCAN_WINDOW;
         let mut smart = Smart::default();
         let mut clock = LocalClock::default();
         let mut was_off = None;
@@ -182,8 +187,8 @@ impl Engine {
             self.reload_config_if_edited();
             let config = self.lock().config.clone();
 
-            if coolers.is_empty() && Instant::now() >= next_scan {
-                coolers = open_coolers();
+            if rescan_due(coolers.len(), Instant::now(), next_scan, retry_until) {
+                open_new_coolers(&mut coolers);
                 next_scan = Instant::now() + RESCAN_INTERVAL;
             }
 
@@ -259,6 +264,7 @@ impl Engine {
             }
             // Without reports the display goes dark by itself within a few seconds.
             if off.is_none() {
+                let open = coolers.len();
                 coolers.retain_mut(|cooler| match cooler.show(&update) {
                     Ok(()) => true,
                     Err(e) => {
@@ -266,6 +272,9 @@ impl Engine {
                         false
                     }
                 });
+                if coolers.len() < open {
+                    retry_until = Instant::now() + RESCAN_WINDOW;
+                }
             }
 
             {
@@ -328,20 +337,32 @@ impl Engine {
     }
 }
 
+/// How long a sensor may keep failing before it is closed and opened again. Opening it again is
+/// not tried more often than this either, so a GPU that is gone is not probed every refresh.
+const REOPEN_AFTER: Duration = Duration::from_secs(10);
+
 /// A sensor opened the first time a connected display needs it. If it cannot be opened, it is
-/// not tried again until the service restarts.
+/// not tried again until the service restarts. One that opened but then keeps failing to read,
+/// like the `nvidia-smi` helper exiting after a driver reload, is closed after [`REOPEN_AFTER`]
+/// and opened again, until it works.
 struct OnDemand<T> {
     name: &'static str,
     /// What the log says about the sensor once it is open.
     describe: fn(&T) -> String,
     state: SensorState<T>,
-    failing: bool,
+    /// When the sensor, as open now, started failing to read.
+    failing_since: Option<Instant>,
+    /// Whether the current run of read errors is logged; it ends with a good read, not with a
+    /// reopen, so a sensor that keeps failing is logged once.
+    logged: bool,
 }
 
 enum SensorState<T> {
     Unopened,
     Open(T),
     Unavailable,
+    /// Closed after failing; opened again once the time has come.
+    Reopen(Instant),
 }
 
 impl<T> OnDemand<T> {
@@ -350,7 +371,8 @@ impl<T> OnDemand<T> {
             name,
             describe,
             state: SensorState::Unopened,
-            failing: false,
+            failing_since: None,
+            logged: false,
         }
     }
 
@@ -362,22 +384,41 @@ impl<T> OnDemand<T> {
         }
     }
 
-    /// Reads the sensor if `wanted`, opening it on first use. Errors are logged once.
+    /// Reads the sensor if `wanted`, opening it on first use. A run of read errors is logged
+    /// once.
     fn sample<V>(
         &mut self,
         wanted: bool,
         open: impl FnOnce() -> io::Result<T>,
         read: impl FnOnce(&mut T) -> io::Result<Option<V>>,
     ) -> Option<V> {
+        self.sample_at(Instant::now(), wanted, open, read)
+    }
+
+    fn sample_at<V>(
+        &mut self,
+        now: Instant,
+        wanted: bool,
+        open: impl FnOnce() -> io::Result<T>,
+        read: impl FnOnce(&mut T) -> io::Result<Option<V>>,
+    ) -> Option<V> {
         if !wanted {
+            // Errors from before the pause do not count against the sensor afterwards.
+            self.failing_since = None;
             return None;
         }
-        if let SensorState::Unopened = self.state {
+        let reopening = matches!(self.state, SensorState::Reopen(at) if now >= at);
+        if reopening || matches!(self.state, SensorState::Unopened) {
             self.state = match open() {
                 Ok(sensor) => {
-                    info!("{}: {}", self.name, (self.describe)(&sensor));
+                    if !reopening {
+                        info!("{}: {}", self.name, (self.describe)(&sensor));
+                    }
+                    self.failing_since = None;
                     SensorState::Open(sensor)
                 }
+                // The read errors that closed the sensor are logged already.
+                Err(_) if reopening => SensorState::Reopen(now + REOPEN_AFTER),
                 Err(e) => {
                     warn!("{} unavailable: {e}", self.name);
                     SensorState::Unavailable
@@ -389,13 +430,18 @@ impl<T> OnDemand<T> {
         };
         match read(sensor) {
             Ok(value) => {
-                self.failing = false;
+                self.failing_since = None;
+                self.logged = false;
                 value
             }
             Err(e) => {
-                if !self.failing {
+                if !self.logged {
                     warn!("{} read failed: {e}", self.name);
-                    self.failing = true;
+                    self.logged = true;
+                }
+                let since = *self.failing_since.get_or_insert(now);
+                if now - since >= REOPEN_AFTER {
+                    self.state = SensorState::Reopen(now);
                 }
                 None
             }
@@ -407,21 +453,35 @@ fn modified(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn open_coolers() -> Vec<Cooler> {
+/// Whether to look for coolers now: when none is open, or until `retry_until`, but never more
+/// often than `next_scan` allows, since enumerating does device I/O.
+fn rescan_due(open: usize, now: Instant, next_scan: Instant, retry_until: Instant) -> bool {
+    now >= next_scan && (open == 0 || now < retry_until)
+}
+
+/// Opens the supported coolers that are not open yet, so a working one is never opened twice.
+/// The devices it skips are logged only while no cooler works, when they tell why; otherwise each
+/// rescan after a lost cooler would log them again.
+fn open_new_coolers(coolers: &mut Vec<Cooler>) {
+    let verbose = coolers.is_empty();
     let detected = match device::detect() {
         Ok(d) => d,
         Err(e) => {
             warn!("device enumeration failed: {e}");
-            return Vec::new();
+            return;
         }
     };
-    let mut coolers = Vec::new();
     for d in &detected {
+        if coolers.iter().any(|c| c.path() == d.info.path) {
+            continue;
+        }
         let Some(model) = d.model else {
-            info!(
-                "ignoring unsupported DeepCool device {:04X} '{}'",
-                d.info.product_id, d.info.product
-            );
+            if verbose {
+                info!(
+                    "ignoring unsupported DeepCool device {:04X} '{}'",
+                    d.info.product_id, d.info.product
+                );
+            }
             continue;
         };
         match Cooler::open(d).and_then(|mut c| c.init().map(|()| c)) {
@@ -429,10 +489,10 @@ fn open_coolers() -> Vec<Cooler> {
                 info!("connected {} (serial {})", model.name, cooler.serial());
                 coolers.push(cooler);
             }
-            Err(e) => warn!("cannot open {}: {e}", model.name),
+            Err(e) if verbose => warn!("cannot open {}: {e}", model.name),
+            Err(_) => {}
         }
     }
-    coolers
 }
 
 /// Why the display should be off now, if it should. `now` is the local time, when known.
@@ -657,6 +717,131 @@ mod tests {
     }
 
     #[test]
+    fn a_sensor_that_keeps_failing_is_opened_again() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (up, opens) = (Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            if up.get() {
+                Ok(opens.get())
+            } else {
+                Err(io::Error::other("driver gone"))
+            }
+        };
+        let read = |opened: &mut u32| {
+            if up.get() {
+                Ok(Some(*opened))
+            } else {
+                Err(io::Error::other("exited"))
+            }
+        };
+        let mut sensor = OnDemand::<u32>::new("flaky", |v| v.to_string());
+        let mut sample = |secs| sensor.sample_at(at(secs), true, open, read);
+
+        assert_eq!(sample(0), Some(1));
+        up.set(false);
+        // Failing for less than ten seconds: kept.
+        assert_eq!((sample(1), sample(5), sample(10)), (None, None, None));
+        assert_eq!(opens.get(), 1);
+        // Closed at 11 s, opened again at the next sample, which fails.
+        assert_eq!((sample(11), opens.get()), (None, 1));
+        assert_eq!((sample(12), opens.get()), (None, 2));
+        // Not again for ten seconds.
+        assert_eq!((sample(13), sample(21)), (None, None));
+        assert_eq!(opens.get(), 2);
+        // The driver is back.
+        up.set(true);
+        assert_eq!((sample(22), opens.get()), (Some(3), 3));
+        assert_eq!((sample(23), opens.get()), (Some(3), 3));
+    }
+
+    #[test]
+    fn a_short_failure_does_not_close_the_sensor() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (up, opens) = (Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            Ok(1.5)
+        };
+        let read = |v: &mut f32| {
+            if up.get() {
+                Ok(Some(*v))
+            } else {
+                Err(io::Error::other("blip"))
+            }
+        };
+        let mut sensor = OnDemand::<f32>::new("blip", |v| v.to_string());
+        let mut sample = |secs| sensor.sample_at(at(secs), true, open, read);
+
+        assert_eq!(sample(0), Some(1.5));
+        up.set(false);
+        assert_eq!(sample(1), None);
+        up.set(true);
+        assert_eq!(sample(9), Some(1.5));
+        // The run of errors started over: this one is not 11 s old.
+        up.set(false);
+        assert_eq!(sample(12), None);
+        assert_eq!(sample(20), None);
+        up.set(true);
+        assert_eq!(sample(21), Some(1.5));
+        assert_eq!(opens.get(), 1);
+    }
+
+    #[test]
+    fn a_reopened_or_paused_sensor_gets_its_full_grace_time() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (opens_ok, reads_ok, opens) = (Cell::new(true), Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            if opens_ok.get() {
+                Ok(())
+            } else {
+                Err(io::Error::other("gone"))
+            }
+        };
+        let read = |_: &mut ()| {
+            if reads_ok.get() {
+                Ok(Some(1))
+            } else {
+                Err(io::Error::other("failed"))
+            }
+        };
+        let mut sensor = OnDemand::<()>::new("flaky", |_| String::new());
+        let mut sample = |secs, wanted| sensor.sample_at(at(secs), wanted, open, read);
+
+        assert_eq!(sample(0, true), Some(1));
+        // Closed at 11 s; reopening at 12 s fails, so the next try is at 22 s.
+        opens_ok.set(false);
+        reads_ok.set(false);
+        assert_eq!(
+            (sample(1, true), sample(11, true), sample(12, true)),
+            (None, None, None)
+        );
+        // At 22 s it opens but still cannot read: it gets ten seconds from now, not from 1 s.
+        opens_ok.set(true);
+        assert_eq!((sample(22, true), sample(31, true)), (None, None));
+        assert_eq!(opens.get(), 3);
+        assert_eq!((sample(32, true), opens.get()), (None, 3));
+        reads_ok.set(true);
+        assert_eq!((sample(33, true), opens.get()), (Some(1), 4));
+
+        // A failure, a long pause while no display needs the sensor, then another failure: the
+        // pause does not count as failing time.
+        reads_ok.set(false);
+        assert_eq!(sample(34, true), None);
+        assert_eq!(sample(100, false), None);
+        assert_eq!((sample(200, true), sample(205, true)), (None, None));
+        reads_ok.set(true);
+        assert_eq!((sample(206, true), opens.get()), (Some(1), 4));
+    }
+
+    #[test]
     fn modes() {
         let at = Duration::ZERO;
         let temp = Reading::Temperature {
@@ -726,6 +911,25 @@ mod tests {
         signal.raise(|f| f.stop = true);
         assert!(signal.wait(Duration::from_secs(5)));
         assert!(!Signal::default().wait(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn rescan_is_due_only_while_a_cooler_may_be_missing() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let window = at(RESCAN_WINDOW.as_secs());
+        // Nothing open: scan every interval, even long after the window.
+        assert!(rescan_due(0, at(0), at(0), t0));
+        assert!(!rescan_due(0, at(2), at(5), t0));
+        assert!(rescan_due(0, at(5), at(5), t0));
+        assert!(rescan_due(0, at(3600), at(3595), t0));
+        // One of two open, still inside the window: scan, but not before the interval.
+        assert!(rescan_due(1, at(5), at(5), window));
+        assert!(!rescan_due(1, at(4), at(5), window));
+        assert!(rescan_due(1, at(59), at(55), window));
+        // Window over: a working setup is not scanned any more.
+        assert!(!rescan_due(1, window, at(5), window));
+        assert!(!rescan_due(2, at(3600), at(5), window));
     }
 
     #[test]

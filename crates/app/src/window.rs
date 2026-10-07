@@ -26,9 +26,8 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CreateCompatibleBitmap,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
-    GetMonitorInfoW, HBITMAP, HDC, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SelectObject,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -52,7 +51,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::anim::{Span, Tween};
 use crate::autostart;
-use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight};
+use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight, pixel_bitmap};
 use crate::i18n::{self, LANGS, Lang, Strings, fill};
 use crate::preview::{self, Frame};
 use crate::theme::{self, Theme};
@@ -257,7 +256,7 @@ fn focus_order(page: Page, config: &Config) -> Vec<Control> {
 
 impl Control {
     /// Whether the control can be used: the service settings need the service.
-    fn enabled(self, _config: &Config, online: bool) -> bool {
+    fn enabled(self, online: bool) -> bool {
         self.local() || online
     }
 
@@ -1208,21 +1207,6 @@ fn paint(hwnd: HWND) {
     }
 }
 
-/// A 32-bit top-down DIB and its pixels.
-fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
-    let mut bmi: BITMAPINFO = unsafe { mem::zeroed() };
-    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    let mut bits = ptr::null_mut();
-    let bitmap =
-        unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
-    (bitmap, bits.cast())
-}
-
 impl Settings {
     fn invalidate(&self) {
         unsafe { InvalidateRect(self.hwnd, ptr::null(), 0) };
@@ -1233,7 +1217,7 @@ impl Settings {
     }
 
     fn enabled(&self, control: Control) -> bool {
-        control.enabled(&self.config, self.online())
+        control.enabled(self.online())
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Option<Hit> {
@@ -1373,10 +1357,10 @@ impl Settings {
             return Effect::None;
         }
         if key == VK_TAB {
-            let (config, online) = (self.config.clone(), self.online());
-            let order = focus_order(self.page, &config);
+            let online = self.online();
+            let order = focus_order(self.page, &self.config);
             self.set_focus(next_focus(&order, self.focus, !shift, |c| {
-                c.enabled(&config, online)
+                c.enabled(online)
             }));
             return Effect::None;
         }
@@ -1421,8 +1405,9 @@ impl Settings {
             Control::Mode | Control::Source | Control::Unit | Control::CustomSymbol => {
                 let count = control.segments(i18n::text()).len();
                 let current = control.selected_segment(&self.config);
+                // The power mode has no segment, past the last one: forward stays put.
                 let index = if forward {
-                    (current + 1).min(count - 1)
+                    (current + 1).min(count - 1).max(current)
                 } else {
                     current.saturating_sub(1)
                 };
@@ -1837,12 +1822,12 @@ impl Settings {
     }
 
     /// The glassy sheen on raised and accent-filled controls: a highlight fading out over the
-    /// top half.
+    /// top half. It fills the control's own shape: a shorter capsule has tighter ends and would
+    /// stick out past the control's shoulders.
     fn gloss(&self, c: &Canvas, r: Rect, radius: f32) {
         if self.theme.glass {
-            let top = Rect::new(r.x, r.y, r.w, r.h * 0.55);
             let white = Color::rgb(0xFF, 0xFF, 0xFF);
-            c.fill_round_rect_v(top, radius, white.alpha(0x40), white.alpha(0x00));
+            c.fill_round_rect_fade(r, radius, white.alpha(0x40), 0.55);
         }
     }
 
@@ -2780,7 +2765,7 @@ mod tests {
             Some(Control::Interval)
         );
         // Offline, only the sidebar is reachable.
-        let online = |c: Control| c.enabled(&config, false);
+        let online = |c: Control| c.enabled(false);
         assert_eq!(
             next_focus(&order, Some(Control::Nav(Page::General)), true, online),
             Some(Control::Nav(Page::Overview))
@@ -2879,11 +2864,11 @@ mod tests {
     #[test]
     fn controls_need_the_service() {
         let config = Config::default();
-        assert!(!Control::Mode.enabled(&config, false));
-        assert!(Control::Mode.enabled(&config, true));
-        assert!(Control::Autostart.enabled(&config, false));
-        assert!(Control::Update.enabled(&config, false));
-        assert!(Control::Nav(Page::Alarm).enabled(&config, false));
+        assert!(!Control::Mode.enabled(false));
+        assert!(Control::Mode.enabled(true));
+        assert!(Control::Autostart.enabled(false));
+        assert!(Control::Update.enabled(false));
+        assert!(Control::Nav(Page::Alarm).enabled(false));
         let auto = Control::Mode.with_segment(&config, 2);
         assert_eq!(auto.mode, Mode::Auto);
         assert_eq!(Control::Mode.selected_segment(&auto), 2);

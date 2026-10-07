@@ -117,36 +117,19 @@ impl Status {
             out.push_str(&value.replace(['\r', '\n'], " "));
             out.push('\n');
         };
+        let number = |value: Option<f32>, decimals: usize| {
+            value.map_or(String::new(), |v| format!("{v:.decimals$}"))
+        };
         line("devices", &self.devices.join(";"));
-        line(
-            "cpu_temp",
-            &self.cpu_temp.map_or(String::new(), |t| format!("{t:.1}")),
-        );
-        line(
-            "cpu_usage",
-            &self.cpu_usage.map_or(String::new(), |u| format!("{u:.1}")),
-        );
-        line(
-            "cpu_power",
-            &self.cpu_power.map_or(String::new(), |w| format!("{w:.1}")),
-        );
-        line(
-            "cpu_freq",
-            &self.cpu_freq.map_or(String::new(), |f| format!("{f:.0}")),
-        );
+        line("cpu_temp", &number(self.cpu_temp, 1));
+        line("cpu_usage", &number(self.cpu_usage, 1));
+        line("cpu_power", &number(self.cpu_power, 1));
+        line("cpu_freq", &number(self.cpu_freq, 0));
         line("gpu_name", self.gpu_name.as_deref().unwrap_or(""));
-        let gpu = &self.gpu;
-        for (key, value, decimals) in [
-            ("gpu_temp", gpu.temp, 1),
-            ("gpu_usage", gpu.usage, 1),
-            ("gpu_power", gpu.power, 1),
-            ("gpu_freq", gpu.freq, 0),
-        ] {
-            line(
-                key,
-                &value.map_or(String::new(), |v| format!("{v:.decimals$}")),
-            );
-        }
+        line("gpu_temp", &number(self.gpu.temp, 1));
+        line("gpu_usage", &number(self.gpu.usage, 1));
+        line("gpu_power", &number(self.gpu.power, 1));
+        line("gpu_freq", &number(self.gpu.freq, 0));
         line(
             "component",
             match self.component {

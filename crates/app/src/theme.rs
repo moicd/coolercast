@@ -6,10 +6,14 @@ use std::ptr;
 
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-use windows_sys::Win32::Graphics::Gdi::GetSysColor;
+use windows_sys::Win32::Graphics::Gdi::{
+    COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT, COLOR_WINDOW,
+    COLOR_WINDOWTEXT, GetSysColor,
+};
 use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST, SystemParametersInfoW,
 };
 
 use crate::gfx::Color;
@@ -232,15 +236,6 @@ impl Theme {
     }
 }
 
-const COLOR_WINDOW: i32 = 5;
-const COLOR_WINDOWTEXT: i32 = 8;
-const COLOR_HIGHLIGHT: i32 = 13;
-const COLOR_HIGHLIGHTTEXT: i32 = 14;
-const COLOR_GRAYTEXT: i32 = 17;
-const COLOR_HOTLIGHT: i32 = 26;
-const SPI_GETHIGHCONTRAST: u32 = 0x0042;
-const HCF_HIGHCONTRASTON: u32 = 1;
-
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
 fn apps_use_dark_theme() -> bool {
@@ -274,27 +269,19 @@ pub fn animations_enabled() -> bool {
 }
 
 fn high_contrast() -> bool {
-    /// `HIGHCONTRASTW`.
-    #[repr(C)]
-    struct HighContrast {
-        size: u32,
-        flags: u32,
-        scheme: *mut u16,
-    }
-    let mut hc = HighContrast {
-        size: size_of::<HighContrast>() as u32,
-        flags: 0,
-        scheme: ptr::null_mut(),
+    let mut hc = HIGHCONTRASTW {
+        cbSize: size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
     };
     let ok = unsafe {
         SystemParametersInfoW(
             SPI_GETHIGHCONTRAST,
-            hc.size,
-            (&mut hc as *mut HighContrast).cast(),
+            hc.cbSize,
+            (&mut hc as *mut HIGHCONTRASTW).cast(),
             0,
         )
     };
-    ok != 0 && hc.flags & HCF_HIGHCONTRASTON != 0
+    ok != 0 && hc.dwFlags & HCF_HIGHCONTRASTON != 0
 }
 
 fn registry_dword(key: &str, name: &str) -> Option<u32> {

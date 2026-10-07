@@ -301,6 +301,8 @@ pub struct Cooler {
     model: &'static Model,
     report_id: u8,
     serial: String,
+    /// The HID path it was opened from, to tell it from the ones still to open on a rescan.
+    path: String,
     hid: HidDevice,
 }
 
@@ -313,6 +315,7 @@ impl Cooler {
             model,
             report_id: detected.info.report_id,
             serial: detected.info.serial.clone(),
+            path: detected.info.path.clone(),
             hid: HidDevice::open(&detected.info)?,
         })
     }
@@ -327,6 +330,10 @@ impl Cooler {
 
     pub fn serial(&self) -> &str {
         &self.serial
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     /// Sends the start-up sequence (AK and LS displays play their bar animation).

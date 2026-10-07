@@ -1,7 +1,23 @@
-# CoolerCast
+<h1 align="center">CoolerCast</h1>
 
-A tiny, native driver for the displays of DeepCool CPU coolers, for Windows and Linux. It shows the
-CPU temperature or usage on the cooler without the official DeepCool app.
+<p align="center"><strong>Your DeepCool cooler's display, without the DeepCool app.</strong><br>A tiny native driver for Windows and Linux.</p>
+
+<p align="center">
+  <a href="#download"><strong>Download</strong></a> ·
+  <a href="#install-on-windows">Windows</a> ·
+  <a href="#install-on-linux">Linux</a> ·
+  <a href="#supported-hardware">Supported hardware</a> ·
+  <a href="#usage">Usage</a>
+</p>
+
+<p align="center">
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Built_with-Rust-0f766e" alt="Built with Rust"></a>
+  <a href="#download"><img src="https://img.shields.io/badge/Windows_%C2%B7_Linux-24292f" alt="Windows and Linux"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-0f766e" alt="MIT license"></a>
+</p>
+
+CoolerCast shows the CPU temperature or usage on the display of DeepCool CPU coolers and cases,
+plus the power, clock and GPU values on the models that have room for them.
 
 The official app is an Electron application that, on a typical setup, keeps **16 processes and about
 1 GB of RAM** busy to send one 64-byte USB packet per second (see
@@ -46,17 +62,14 @@ These links always point to the latest version. Older versions, release notes an
 - Turns the display off while the PC is locked or its screen is off (Windows), or every night.
 - Temperature alarm (the display blinks above a threshold, 90 °C by default).
 - Runs as a service: starts with the PC, no window needed.
-- Windows: optional tray icon that shows the temperature, and a settings window in a liquid glass
-  style (rounded, translucent surfaces over Acrylic on Windows 11; the selection slides between
-  pages and a highlight follows the mouse), with a live preview of the cooler display and the last
-  two minutes of temperature and usage. It follows the Windows text size, high contrast,
-  transparency and animation effects settings.
-- The Windows app speaks English, Spanish, Portuguese, French, German, Italian, Polish, Turkish,
-  Russian, Chinese, Japanese and Korean. It follows the Windows display language, or the one picked
-  under **General → Language** (kept per user in `HKCU\Software\CoolerCast`).
+- Windows: optional tray icon with the temperature, and a settings window with a live preview of
+  the display and the last two minutes of temperature and usage. It follows the Windows light or
+  dark mode, text size, high contrast, transparency and animation settings.
+- The Windows app is in English, Spanish, Portuguese, French, German, Italian, Polish, Turkish,
+  Russian, Chinese, Japanese and Korean, following the Windows display language unless you pick
+  one under **General → Language**.
 - Reconnects automatically after unplugging the cooler or resuming from sleep.
-- Windows efficiency mode (EcoQoS): the service and the tray icon ask Windows for efficiency cores
-  and clock speeds; the settings window runs normally while it is open.
+- Runs in Windows efficiency mode (EcoQoS), except while the settings window is open.
 - No runtime and no telemetry. The only network access is the **Check for updates** button, which
   asks GitHub for the latest version when you click it. The Linux build is a single static binary.
 

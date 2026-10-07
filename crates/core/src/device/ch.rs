@@ -7,12 +7,8 @@
 
 use super::ak::{self, PACKET_LEN, Packet};
 use super::{Component, Reading, Update};
-use crate::config::{Symbol, Unit};
+use crate::config::Unit;
 use crate::sensors::Values;
-
-const MODE_CELSIUS: u8 = 19;
-const MODE_FAHRENHEIT: u8 = 35;
-const MODE_USAGE: u8 = 76;
 
 /// Both sections show the same kind of value: the usage when the configured mode shows the
 /// usage, the temperature otherwise. A custom value goes to the CPU section.
@@ -20,12 +16,8 @@ pub fn packet(report_id: u8, update: &Update) -> Packet {
     let usage = matches!(update.reading, Reading::Usage { .. });
     let cpu = match update.reading {
         Reading::Custom { value, symbol, bar } => {
-            let mode = match symbol {
-                Symbol::Celsius => MODE_CELSIUS,
-                Symbol::Fahrenheit => MODE_FAHRENHEIT,
-                Symbol::Percent => MODE_USAGE,
-            };
-            section(mode, bar.clamp(1, 10), value.min(999))
+            let (mode, value, bar) = ak::custom(value, symbol, bar);
+            section(mode, bar, value)
         }
         _ => component(&update.readings.of(Component::Cpu), usage, update.unit),
     };
@@ -43,14 +35,12 @@ fn component(values: &Values, prefer_usage: bool, unit: Unit) -> [u8; 5] {
     let usage = values.usage.unwrap_or(0.0);
     let bar = ak::bar_level(usage);
     match values.temp {
-        Some(celsius) if !prefer_usage || values.usage.is_none() => {
-            let mode = match unit {
-                Unit::Celsius => MODE_CELSIUS,
-                Unit::Fahrenheit => MODE_FAHRENHEIT,
-            };
-            section(mode, bar, ak::display_value(unit.from_celsius(celsius)))
-        }
-        _ => section(MODE_USAGE, bar, ak::display_value(usage)),
+        Some(celsius) if !prefer_usage || values.usage.is_none() => section(
+            ak::unit_mode(unit),
+            bar,
+            ak::display_value(unit.from_celsius(celsius)),
+        ),
+        _ => section(ak::MODE_USAGE, bar, ak::display_value(usage)),
     }
 }
 
@@ -62,6 +52,7 @@ fn section(mode: u8, bar: u8, value: u16) -> [u8; 5] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Symbol;
     use crate::device::Readings;
 
     const REPORT_ID: u8 = 16;

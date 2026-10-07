@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use super::{Values, Vendor};
-use crate::sensors::cpu_power::{counter_delta, watts};
+use crate::sensors::cpu_power::Average;
 
 const DRM: &str = "/sys/class/drm";
 
@@ -48,11 +48,8 @@ struct Files {
 enum PowerFile {
     /// Average power in µW.
     Microwatts(PathBuf),
-    /// Energy counter in µJ, with the previous read to compute the power.
-    Microjoules {
-        path: PathBuf,
-        last: Option<(u64, Instant)>,
-    },
+    /// Energy counter in µJ, averaged into power over the time between reads.
+    Microjoules { path: PathBuf, average: Average },
 }
 
 #[derive(Debug, PartialEq)]
@@ -150,12 +147,9 @@ impl PowerFile {
     fn read(&mut self) -> Option<f32> {
         match self {
             PowerFile::Microwatts(path) => read_number(path).map(|uw| uw as f32 / 1e6),
-            PowerFile::Microjoules { path, last } => {
-                let value = read_number(path)?;
-                let now = Instant::now();
-                let previous = last.replace((value, now))?;
-                let microjoules = counter_delta(previous.0, value, u64::MAX);
-                watts(microjoules as f64 / 1e6, now - previous.1)
+            PowerFile::Microjoules { path, average } => {
+                let microjoules = read_number(path)?;
+                average.update(microjoules, u64::MAX, 1e-6, Instant::now())
             }
         }
     }
@@ -216,8 +210,10 @@ fn files(card: &Card) -> Files {
         "i915" | "xe" => Files {
             usage: None,
             temp: hwmon.as_deref().and_then(first_temp_input),
-            power: in_hwmon("energy1_input")
-                .map(|path| PowerFile::Microjoules { path, last: None }),
+            power: in_hwmon("energy1_input").map(|path| PowerFile::Microjoules {
+                path,
+                average: Average::default(),
+            }),
             freq: existing(card.dir.join("gt_act_freq_mhz"))
                 .or_else(|| existing(device.join("tile0/gt0/freq0/act_freq")))
                 .map(FreqFile::Mhz),
@@ -232,13 +228,7 @@ fn files(card: &Card) -> Files {
 }
 
 fn first_dir(dir: &Path) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    dirs.sort();
-    dirs.into_iter().next()
+    fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).min()
 }
 
 fn first_temp_input(hwmon: &Path) -> Option<PathBuf> {
@@ -269,6 +259,10 @@ impl NvidiaSmi {
             .args(["--query-gpu=name", "--format=csv,noheader", "-i", "0"])
             .output()
             .map_err(|e| io::Error::new(e.kind(), format!("nvidia-smi: {e}")))?;
+        // It also fails like this when the driver is unusable, e.g. after an upgrade.
+        if !name.status.success() {
+            return Err(io::Error::other(format!("nvidia-smi: {}", name.status)));
+        }
         let name = String::from_utf8_lossy(&name.stdout).trim().to_owned();
         let mut child = Command::new("nvidia-smi")
             .args([
@@ -333,14 +327,12 @@ impl Drop for NvidiaSmi {
 /// Parses `temperature, utilization, power, clock`; unsupported fields read `[N/A]`.
 fn parse_smi_line(line: &str) -> Option<Values> {
     let mut fields = line.split(',').map(|f| f.trim().parse::<f32>().ok());
-    let mut next = || fields.next();
-    let readings = Values {
-        temp: next()?,
-        usage: next()?,
-        power: next()?,
-        freq: next()?,
-    };
-    Some(readings)
+    Some(Values {
+        temp: fields.next()?,
+        usage: fields.next()?,
+        power: fields.next()?,
+        freq: fields.next()?,
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +407,8 @@ mod tests {
         let mut gpu = Gpu::open_in(&t.0).unwrap();
         let r = gpu.read().unwrap();
         assert_eq!((r.temp, r.usage, r.freq), (None, None, Some(1300.0)));
+        // Opening primed the counter: read right after, the power is not known yet (not 0 W).
+        assert_eq!(r.power, None);
     }
 
     #[test]

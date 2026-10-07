@@ -1,19 +1,20 @@
 //! Renders the tray icon: a rounded badge with a number, drawn with GDI at runtime.
 
-use std::{mem, ptr, slice};
+use std::{ptr, slice};
 
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Gdi::{
-    ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateBitmap,
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH,
-    DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject,
-    DrawTextW, FF_DONTCARE, FW_BOLD, GdiFlush, OUT_DEFAULT_PRECIS, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT,
+    ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, CreateBitmap, CreateCompatibleDC, CreateFontW,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC,
+    DeleteObject, DrawTextW, FF_DONTCARE, FW_BOLD, GdiFlush, OUT_DEFAULT_PRECIS, SelectObject,
+    SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
 };
+
+use crate::gfx::pixel_bitmap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -28,15 +29,7 @@ pub fn render(text: &str, background: Rgb) -> HICON {
     unsafe {
         let dc = CreateCompatibleDC(ptr::null_mut());
 
-        let mut bmi: BITMAPINFO = mem::zeroed();
-        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = size;
-        bmi.bmiHeader.biHeight = -size; // top-down
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        let mut bits = ptr::null_mut();
-        let color = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
+        let (color, bits) = pixel_bitmap(dc, size, size);
         let previous = SelectObject(dc, color);
 
         // Draw white anti-aliased text on black; the gray level becomes text coverage.
@@ -62,7 +55,7 @@ pub fn render(text: &str, background: Rgb) -> HICON {
             (DEFAULT_PITCH | FF_DONTCARE) as _,
             face.as_ptr(),
         );
-        SelectObject(dc, font);
+        let previous_font = SelectObject(dc, font);
         SetBkMode(dc, TRANSPARENT as _);
         SetTextColor(dc, 0x00FF_FFFF);
         let mut rect = RECT {
@@ -71,10 +64,10 @@ pub fn render(text: &str, background: Rgb) -> HICON {
             right: size,
             bottom: size,
         };
-        let mut text16: Vec<u16> = text.encode_utf16().collect();
+        let text16: Vec<u16> = text.encode_utf16().collect();
         DrawTextW(
             dc,
-            text16.as_mut_ptr(),
+            text16.as_ptr(),
             text16.len() as i32,
             &mut rect,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -84,6 +77,8 @@ pub fn render(text: &str, background: Rgb) -> HICON {
         let pixels = slice::from_raw_parts_mut(bits.cast::<u32>(), (size * size) as usize);
         compose(pixels, size as usize, background);
 
+        // A font selected into a DC cannot be deleted: select the originals back first.
+        SelectObject(dc, previous_font);
         SelectObject(dc, previous);
         DeleteObject(font);
         DeleteDC(dc);

@@ -2,10 +2,12 @@
 //! device-independent pixels.
 
 use std::cell::RefCell;
-use std::ptr;
+use std::{mem, ptr};
 
 use coolercast_core::win::wide;
-use windows_sys::Win32::Graphics::Gdi::HDC;
+use windows_sys::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, HBITMAP, HDC,
+};
 use windows_sys::Win32::Graphics::GdiPlus::*;
 
 /// Keeps GDI+ initialized while alive.
@@ -108,6 +110,21 @@ struct Font {
     size: f32,
     weight: Weight,
     raw: *mut GpFont,
+}
+
+/// A 32-bit top-down DIB and its pixels.
+pub fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
+    let mut bmi: BITMAPINFO = unsafe { mem::zeroed() };
+    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    let mut bits = ptr::null_mut();
+    let bitmap =
+        unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
+    (bitmap, bits.cast())
 }
 
 /// `PixelFormat32bppPARGB` from the GDI+ headers (a macro, missing from windows-sys).
@@ -367,6 +384,21 @@ impl Canvas {
         unsafe { GdipDeletePath(path) };
     }
 
+    /// Fills a rounded rectangle with `color` at the top, fading out at `fraction` of its height.
+    /// The fade keeps the outline of the whole rectangle, round ends included.
+    pub fn fill_round_rect_fade(&self, r: Rect, radius: f32, color: Color, fraction: f32) {
+        let path = self.rounded_path(r, radius);
+        let device = self.r(r);
+        // Where the fade ends on the gradient, which `with_gradient` overscans by one pixel.
+        let end = (1.0 + fraction * device.h) / (device.h + 2.0);
+        let (factors, positions) = ([0.0, 1.0, 1.0], [0.0, end, 1.0]);
+        self.with_gradient(device, color, color.alpha(0), |b| unsafe {
+            GdipSetLineBlend(b.cast(), factors.as_ptr(), positions.as_ptr(), 3);
+            GdipFillPath(self.g, b, path);
+        });
+        unsafe { GdipDeletePath(path) };
+    }
+
     /// Outlines a rounded rectangle with a vertical gradient, inside the rectangle.
     pub fn stroke_round_rect_v(&self, r: Rect, radius: f32, width: f32, top: Color, bottom: Color) {
         if top == bottom {
@@ -480,15 +512,6 @@ impl Canvas {
 
     /// Draws one line of text, vertically centered in `r`.
     pub fn text(&self, text: &str, r: Rect, size: f32, weight: Weight, color: Color, align: Align) {
-        let font = self.font(size, weight);
-        let text16: Vec<u16> = text.encode_utf16().collect();
-        let layout = self.r(r);
-        let rect = RectF {
-            X: layout.x,
-            Y: layout.y,
-            Width: layout.w,
-            Height: layout.h,
-        };
         unsafe {
             GdipSetStringFormatAlign(
                 self.format,
@@ -499,21 +522,23 @@ impl Canvas {
                 },
             )
         };
-        self.with_brush(color, |b| unsafe {
-            GdipDrawString(
-                self.g,
-                text16.as_ptr(),
-                text16.len() as i32,
-                font,
-                &rect,
-                self.format,
-                b,
-            );
-        });
+        self.draw_string(text, r, size, weight, color, self.format);
     }
 
     /// Draws text wrapped at word boundaries, from the top of `r`, left-aligned.
     pub fn text_wrapped(&self, text: &str, r: Rect, size: f32, weight: Weight, color: Color) {
+        self.draw_string(text, r, size, weight, color, self.wrap_format);
+    }
+
+    fn draw_string(
+        &self,
+        text: &str,
+        r: Rect,
+        size: f32,
+        weight: Weight,
+        color: Color,
+        format: *mut GpStringFormat,
+    ) {
         let font = self.font(size, weight);
         let text16: Vec<u16> = text.encode_utf16().collect();
         let layout = self.r(r);
@@ -530,7 +555,7 @@ impl Canvas {
                 text16.len() as i32,
                 font,
                 &rect,
-                self.wrap_format,
+                format,
                 b,
             );
         });

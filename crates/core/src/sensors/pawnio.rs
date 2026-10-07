@@ -7,13 +7,10 @@ use std::io;
 use std::path::PathBuf;
 use std::{fs, ptr};
 
-use windows_sys::Win32::Foundation::{FreeLibrary, HANDLE, HMODULE};
-use windows_sys::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
-};
+use windows_sys::Win32::Foundation::HANDLE;
 
 use crate::paths;
-use crate::win::wide;
+use crate::win::Library;
 
 type OpenFn = unsafe extern "system" fn(*mut HANDLE) -> i32;
 type LoadFn = unsafe extern "system" fn(HANDLE, *const u8, usize) -> i32;
@@ -34,10 +31,11 @@ pub const INSTALL_HINT: &str = "install it with `winget install namazso.PawnIO`"
 
 /// A PawnIO executor with one module loaded.
 pub struct PawnIo {
-    library: HMODULE,
     handle: HANDLE,
     execute: ExecuteFn,
     close: CloseFn,
+    // Last: the functions above live in this library.
+    _library: Library,
 }
 
 // The executor handle is a file handle; PawnIOLib calls are thread-safe.
@@ -47,32 +45,28 @@ impl PawnIo {
     /// Opens the driver and loads a compiled module (`*.bin`).
     pub fn load(module: &[u8]) -> io::Result<Self> {
         let library = load_library()?;
-        let symbols = (|| unsafe {
-            Some((
-                symbol::<OpenFn>(library, c"pawnio_open")?,
-                symbol::<LoadFn>(library, c"pawnio_load")?,
-                symbol::<ExecuteFn>(library, c"pawnio_execute")?,
-                symbol::<CloseFn>(library, c"pawnio_close")?,
-            ))
-        })();
-        let Some((open, load, execute, close)) = symbols else {
-            unsafe { FreeLibrary(library) };
-            return Err(io::Error::other(
-                "PawnIOLib.dll is missing expected exports",
-            ));
+        // SAFETY: the types match the documented signatures of these exports.
+        let symbols = unsafe {
+            (|| {
+                Some((
+                    library.symbol::<OpenFn>(c"pawnio_open")?,
+                    library.symbol::<LoadFn>(c"pawnio_load")?,
+                    library.symbol::<ExecuteFn>(c"pawnio_execute")?,
+                    library.symbol::<CloseFn>(c"pawnio_close")?,
+                ))
+            })()
         };
+        let (open, load, execute, close) =
+            symbols.ok_or_else(|| io::Error::other("PawnIOLib.dll is missing expected exports"))?;
 
         let mut handle: HANDLE = ptr::null_mut();
-        if let Err(e) = check(unsafe { open(&mut handle) }, "pawnio_open") {
-            unsafe { FreeLibrary(library) };
-            return Err(e);
-        }
-        // From here on `Drop` releases both the handle and the library.
+        check(unsafe { open(&mut handle) }, "pawnio_open")?;
+        // From here on `Drop` closes the handle.
         let pawn = Self {
-            library,
             handle,
             execute,
             close,
+            _library: library,
         };
         check(
             unsafe { load(pawn.handle, module.as_ptr(), module.len()) },
@@ -113,10 +107,7 @@ impl PawnIo {
 
 impl Drop for PawnIo {
     fn drop(&mut self) {
-        unsafe {
-            (self.close)(self.handle);
-            FreeLibrary(self.library);
-        }
+        unsafe { (self.close)(self.handle) };
     }
 }
 
@@ -127,7 +118,7 @@ pub fn read_msr(pawn: &PawnIo, msr: u64) -> io::Result<u64> {
     Ok(out[0])
 }
 
-fn load_library() -> io::Result<HMODULE> {
+fn load_library() -> io::Result<Library> {
     let program_files = env::var_os("ProgramFiles")
         .map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
     let path = program_files.join("PawnIO").join("PawnIOLib.dll");
@@ -138,24 +129,7 @@ fn load_library() -> io::Result<HMODULE> {
         ));
     }
     // Absolute path + restricted search: never pick up a DLL planted next to the executable.
-    let library = unsafe {
-        LoadLibraryExW(
-            wide(&path).as_ptr(),
-            ptr::null_mut(),
-            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
-        )
-    };
-    if library.is_null() {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(library)
-    }
-}
-
-unsafe fn symbol<T>(library: HMODULE, name: &CStr) -> Option<T> {
-    let address = unsafe { GetProcAddress(library, name.as_ptr().cast()) }?;
-    // SAFETY: `T` is the documented signature of the export.
-    Some(unsafe { std::mem::transmute_copy::<unsafe extern "system" fn() -> isize, T>(&address) })
+    Library::at(&path)
 }
 
 fn check(hr: i32, what: &str) -> io::Result<()> {
