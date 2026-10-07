@@ -159,15 +159,14 @@ unsafe extern "system" fn window_proc(
         WM_OPEN_SETTINGS => window::open(),
         WM_DESTROY => {
             window::close();
-            APP.with(|app| {
-                if let Some(app) = app.borrow_mut().take() {
-                    unsafe {
-                        KillTimer(app.hwnd, TIMER_ID);
-                        Shell_NotifyIconW(NIM_DELETE, &notify_data(&app));
-                        DestroyIcon(app.icon);
-                    }
+            // Taken out first: Shell_NotifyIconW dispatches messages that borrow APP (see refresh).
+            if let Some(app) = APP.with(|app| app.borrow_mut().take()) {
+                unsafe {
+                    KillTimer(app.hwnd, TIMER_ID);
+                    Shell_NotifyIconW(NIM_DELETE, &notify_data(&app));
+                    DestroyIcon(app.icon);
                 }
-            });
+            }
             unsafe { PostQuitMessage(0) };
         }
         m if m == TASKBAR_CREATED.load(Ordering::Relaxed) && m != 0 => refresh(true),
@@ -214,9 +213,9 @@ pub fn current_status() -> Option<Status> {
 pub fn refresh(add: bool) {
     let status = ipc::query_status().ok();
     let window_open = window::is_open();
-    APP.with(|app| {
+    let data = APP.with(|app| {
         let mut app = app.borrow_mut();
-        let Some(app) = app.as_mut() else { return };
+        let app = app.as_mut()?;
         app.status = status.clone();
 
         let key = icon_content(app.status.as_ref());
@@ -228,7 +227,12 @@ pub fn refresh(add: bool) {
             app.icon = new_icon;
             app.icon_key = key;
         }
-        let data = notify_data(app);
+        Some(notify_data(app))
+    });
+    // Outside the borrow: Shell_NotifyIconW waits for Explorer and meanwhile dispatches the
+    // messages other threads send to this one (TaskbarCreated, tray icon clicks), whose handlers
+    // borrow APP again.
+    if let Some(data) = data {
         let interval = if window_open {
             REFRESH_MS_WINDOW
         } else {
@@ -237,9 +241,9 @@ pub fn refresh(add: bool) {
         unsafe {
             Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data);
             // Also restarts the timer, so the next poll is a full interval away.
-            SetTimer(app.hwnd, TIMER_ID, interval, None);
+            SetTimer(data.hWnd, TIMER_ID, interval, None);
         }
-    });
+    }
     window::update(status.as_ref());
 }
 
