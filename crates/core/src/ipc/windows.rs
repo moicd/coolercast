@@ -4,7 +4,9 @@ use std::io;
 use std::ptr;
 use std::thread::{self, JoinHandle};
 
-use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError, LocalFree};
+use windows_sys::Win32::Foundation::{
+    ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GetLastError, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -54,19 +56,15 @@ where
     F: Fn(&str) -> String + Send + 'static,
 {
     let security = SecurityDescriptor::from_sddl(PIPE_SDDL)?;
-    // Create the first instance up front so a name conflict is reported to the caller.
-    let first = create_pipe(&security)?;
+    // One instance for the life of the service, created here so a name conflict is reported to
+    // the caller. Closing it between clients would free the name for any local process to take.
+    let pipe = create_pipe(&security)?;
     Ok(thread::spawn(move || {
-        let mut pipe = Some(first);
         loop {
-            let current = match pipe.take().map_or_else(|| create_pipe(&security), Ok) {
-                Ok(p) => p,
-                Err(e) => {
-                    crate::error!("IPC: cannot create pipe: {e}");
-                    return;
-                }
-            };
-            handle_client(&current, &handler);
+            if let Err(e) = handle_client(&pipe, &handler) {
+                crate::error!("IPC: cannot wait for clients: {e}");
+                return;
+            }
         }
     }))
 }
@@ -92,10 +90,17 @@ fn create_pipe(security: &SecurityDescriptor) -> io::Result<Handle> {
     })
 }
 
-fn handle_client(pipe: &Handle, handler: &impl Fn(&str) -> String) {
+/// Serves one client, then leaves the instance ready for the next one. Fails only when the pipe
+/// cannot wait for clients any more.
+fn handle_client(pipe: &Handle, handler: &impl Fn(&str) -> String) -> io::Result<()> {
     let h = pipe.raw();
     let connected = unsafe { ConnectNamedPipe(h, ptr::null_mut()) } != 0
-        || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+        || match unsafe { GetLastError() } {
+            ERROR_PIPE_CONNECTED => true,
+            // The client connected and left before the call.
+            ERROR_NO_DATA => false,
+            e => return Err(io::Error::from_raw_os_error(e as i32)),
+        };
     if connected {
         let mut buf = vec![0u8; BUFFER_SIZE as usize];
         let mut read = 0u32;
@@ -125,12 +130,10 @@ fn handle_client(pipe: &Handle, handler: &impl Fn(&str) -> String) {
         }
     }
     unsafe { DisconnectNamedPipe(h) };
+    Ok(())
 }
 
 struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
-
-// The descriptor is immutable after creation.
-unsafe impl Send for SecurityDescriptor {}
 
 impl SecurityDescriptor {
     fn from_sddl(sddl: &str) -> io::Result<Self> {
