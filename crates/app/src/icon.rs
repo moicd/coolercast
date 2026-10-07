@@ -55,7 +55,7 @@ pub fn render(text: &str, background: Rgb) -> HICON {
             (DEFAULT_PITCH | FF_DONTCARE) as _,
             face.as_ptr(),
         );
-        SelectObject(dc, font);
+        let previous_font = SelectObject(dc, font);
         SetBkMode(dc, TRANSPARENT as _);
         SetTextColor(dc, 0x00FF_FFFF);
         let mut rect = RECT {
@@ -77,6 +77,8 @@ pub fn render(text: &str, background: Rgb) -> HICON {
         let pixels = slice::from_raw_parts_mut(bits.cast::<u32>(), (size * size) as usize);
         compose(pixels, size as usize, background);
 
+        // A font selected into a DC cannot be deleted: select the originals back first.
+        SelectObject(dc, previous_font);
         SelectObject(dc, previous);
         DeleteObject(font);
         DeleteDC(dc);
