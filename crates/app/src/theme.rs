@@ -1,4 +1,4 @@
-//! Colors that follow the Windows light/dark app setting, opaque or as glass over the window
+//! Colors that follow the Windows light/dark app setting, opaque or translucent over the Mica
 //! backdrop, and the accessibility settings that change them: high contrast, transparency
 //! effects and text size.
 
@@ -26,13 +26,10 @@ pub struct Theme {
     pub background: Color,
     /// What the window is cleared with: `background`, or a light tint over the backdrop.
     pub backdrop: Color,
-    /// Card fill, as a vertical gradient (equal when opaque).
-    pub card_top: Color,
-    pub card_bottom: Color,
-    /// Card outline, as a vertical gradient: a lit top edge on glass.
-    pub edge_top: Color,
-    pub edge_bottom: Color,
-    /// Dividers between rows.
+    /// Flat fill of cards and the language list, and their hairline outline.
+    pub card: Color,
+    pub edge: Color,
+    /// Outline of the switch track while off.
     pub border: Color,
     pub text: Color,
     pub text_dim: Color,
@@ -40,6 +37,8 @@ pub struct Theme {
     pub on_accent: Color,
     pub control: Color,
     pub control_hover: Color,
+    /// Outline of buttons and fields: only high contrast draws one.
+    pub outline: Color,
     pub focus: Color,
     pub ok: Color,
     pub warn: Color,
@@ -48,17 +47,13 @@ pub struct Theme {
     pub temp_line: Color,
     pub usage_line: Color,
     pub grid: Color,
-    /// Soft shadow under cards, panels and raised controls.
-    pub shadow: Color,
-    /// The pill under the item the mouse is over.
+    /// The fill under the item the mouse is over.
     pub hover: Color,
-    /// The pill of the selected sidebar page, tinted with the accent.
+    /// The fill of the selected sidebar page, next to its accent mark.
     pub selection: Color,
-    /// The raised thumb of a segmented control, and the text on it.
+    /// The selected option of a segmented control, and the text on it.
     pub thumb: Color,
     pub on_thumb: Color,
-    /// The round knob of a switch.
-    pub knob: Color,
 }
 
 impl Theme {
@@ -80,17 +75,16 @@ impl Theme {
             glass: false,
             background: Color::rgb(0x20, 0x20, 0x20),
             backdrop: Color::rgb(0x20, 0x20, 0x20),
-            card_top: Color::rgb(0x2B, 0x2B, 0x2B),
-            card_bottom: Color::rgb(0x2B, 0x2B, 0x2B),
-            edge_top: Color::rgb(0x3A, 0x3A, 0x3A),
-            edge_bottom: Color::rgb(0x3A, 0x3A, 0x3A),
-            border: Color::rgb(0x3A, 0x3A, 0x3A),
+            card: Color::rgb(0x2B, 0x2B, 0x2B),
+            edge: Color::rgb(0x1D, 0x1D, 0x1D),
+            border: Color::rgb(0x9A, 0x9A, 0x9A),
             text: Color::rgb(0xF2, 0xF2, 0xF2),
             text_dim: Color::rgb(0xA8, 0xA8, 0xA8),
             accent: Color::rgb(0x2D, 0xD4, 0xBF),
             on_accent: Color::rgb(0x04, 0x2F, 0x2E),
             control: Color::rgb(0x38, 0x38, 0x38),
             control_hover: Color::rgb(0x44, 0x44, 0x44),
+            outline: Color::rgb(0, 0, 0).alpha(0),
             focus: Color::rgb(0xFF, 0xFF, 0xFF),
             ok: Color::rgb(0x4A, 0xDE, 0x80),
             warn: Color::rgb(0xFB, 0xBF, 0x24),
@@ -98,12 +92,10 @@ impl Theme {
             temp_line: Color::rgb(0xFB, 0xA9, 0x4C),
             usage_line: Color::rgb(0x93, 0xC5, 0xFD),
             grid: Color::rgb(0x36, 0x36, 0x36),
-            shadow: Color::rgb(0, 0, 0).alpha(0x60),
-            hover: Color::rgb(0xFF, 0xFF, 0xFF).alpha(0x12),
-            selection: Color::rgb(0x2D, 0xD4, 0xBF).alpha(0x30),
-            thumb: Color::rgb(0x5C, 0x5C, 0x5C),
+            hover: Color::rgb(0xFF, 0xFF, 0xFF).alpha(0x0F),
+            selection: Color::rgb(0xFF, 0xFF, 0xFF).alpha(0x15),
+            thumb: Color::rgb(0x50, 0x50, 0x50),
             on_thumb: Color::rgb(0xF2, 0xF2, 0xF2),
-            knob: Color::rgb(0xFF, 0xFF, 0xFF),
         }
     }
 
@@ -113,17 +105,16 @@ impl Theme {
             glass: false,
             background: Color::rgb(0xF3, 0xF3, 0xF3),
             backdrop: Color::rgb(0xF3, 0xF3, 0xF3),
-            card_top: Color::rgb(0xFF, 0xFF, 0xFF),
-            card_bottom: Color::rgb(0xFF, 0xFF, 0xFF),
-            edge_top: Color::rgb(0xE5, 0xE5, 0xE5),
-            edge_bottom: Color::rgb(0xE5, 0xE5, 0xE5),
-            border: Color::rgb(0xE5, 0xE5, 0xE5),
+            card: Color::rgb(0xFF, 0xFF, 0xFF),
+            edge: Color::rgb(0xE5, 0xE5, 0xE5),
+            border: Color::rgb(0x8A, 0x8A, 0x8A),
             text: Color::rgb(0x1A, 0x1A, 0x1A),
             text_dim: Color::rgb(0x61, 0x61, 0x61),
             accent: Color::rgb(0x0F, 0x76, 0x6E),
             on_accent: Color::rgb(0xFF, 0xFF, 0xFF),
             control: Color::rgb(0xEE, 0xEE, 0xEE),
             control_hover: Color::rgb(0xE2, 0xE2, 0xE2),
+            outline: Color::rgb(0, 0, 0).alpha(0),
             focus: Color::rgb(0x1A, 0x1A, 0x1A),
             ok: Color::rgb(0x16, 0xA3, 0x4A),
             warn: Color::rgb(0xD9, 0x77, 0x06),
@@ -131,17 +122,15 @@ impl Theme {
             temp_line: Color::rgb(0xC2, 0x41, 0x0C),
             usage_line: Color::rgb(0x25, 0x63, 0xEB),
             grid: Color::rgb(0xEC, 0xEC, 0xEC),
-            shadow: Color::rgb(0, 0, 0).alpha(0x24),
-            hover: Color::rgb(0, 0, 0).alpha(0x0A),
-            selection: Color::rgb(0x0F, 0x76, 0x6E).alpha(0x22),
+            hover: Color::rgb(0, 0, 0).alpha(0x09),
+            selection: Color::rgb(0, 0, 0).alpha(0x0C),
             thumb: Color::rgb(0xFF, 0xFF, 0xFF),
             on_thumb: Color::rgb(0x1A, 0x1A, 0x1A),
-            knob: Color::rgb(0xFF, 0xFF, 0xFF),
         }
     }
 
-    /// Translucent variant: cards and controls let the blurred backdrop through, with a lit top
-    /// edge and a soft top-to-bottom fade.
+    /// Translucent variant: flat cards and controls over the Mica backdrop, with the fills of the
+    /// Windows 11 controls.
     fn glass(self) -> Self {
         let white = Color::rgb(0xFF, 0xFF, 0xFF);
         let black = Color::rgb(0, 0, 0);
@@ -149,37 +138,29 @@ impl Theme {
             Self {
                 glass: true,
                 backdrop: Color::rgb(0x10, 0x10, 0x10).alpha(0x48),
-                // #A8A8A8 reads at 3.7:1 on the lightest part of a glass card (#4B4B4B);
-                // this one at 5.0:1.
-                text_dim: Color::rgb(0xC4, 0xC4, 0xC4),
-                card_top: Color::rgb(0x50, 0x50, 0x50).alpha(0x8C),
-                card_bottom: Color::rgb(0x2C, 0x2C, 0x2C).alpha(0x78),
-                edge_top: white.alpha(0x5C),
-                edge_bottom: white.alpha(0x12),
-                border: white.alpha(0x16),
+                card: white.alpha(0x10),
+                edge: black.alpha(0x50),
+                border: white.alpha(0x8B),
                 control: white.alpha(0x14),
                 control_hover: white.alpha(0x26),
                 grid: white.alpha(0x14),
-                hover: white.alpha(0x16),
-                selection: self.accent.alpha(0x3C),
-                thumb: white.alpha(0x38),
+                hover: white.alpha(0x0F),
+                selection: white.alpha(0x15),
+                thumb: white.alpha(0x30),
                 ..self
             }
         } else {
             Self {
                 glass: true,
                 backdrop: white.alpha(0x38),
-                card_top: white.alpha(0xD0),
-                card_bottom: white.alpha(0x94),
-                edge_top: white,
-                edge_bottom: black.alpha(0x16),
-                border: black.alpha(0x12),
+                card: white.alpha(0xB3),
+                edge: black.alpha(0x12),
+                border: black.alpha(0x72),
                 control: black.alpha(0x0C),
                 control_hover: black.alpha(0x18),
                 grid: black.alpha(0x10),
-                // Light glass is nearly white already: hovering darkens it a little.
-                hover: black.alpha(0x0C),
-                selection: self.accent.alpha(0x2A),
+                hover: black.alpha(0x09),
+                selection: black.alpha(0x0C),
                 thumb: white.alpha(0xF2),
                 ..self
             }
@@ -201,10 +182,8 @@ impl Theme {
             glass: false,
             background: window,
             backdrop: window,
-            card_top: window,
-            card_bottom: window,
-            edge_top: text,
-            edge_bottom: text,
+            card: window,
+            edge: text,
             border: text,
             text,
             text_dim: text,
@@ -212,6 +191,7 @@ impl Theme {
             on_accent: on_highlight,
             control: window,
             control_hover: highlight.alpha(0x60),
+            outline: text,
             focus: text,
             ok: text,
             warn: text,
@@ -219,13 +199,11 @@ impl Theme {
             temp_line: highlight,
             usage_line: link,
             grid: sys(COLOR_GRAYTEXT),
-            // No shadows or translucency: shapes are outlined instead.
-            shadow: window.alpha(0),
+            // No translucency: shapes are outlined instead.
             hover: highlight.alpha(0x60),
             selection: highlight,
             thumb: highlight,
             on_thumb: on_highlight,
-            knob: on_highlight,
         }
     }
 
