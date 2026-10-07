@@ -256,7 +256,7 @@ fn focus_order(page: Page, config: &Config) -> Vec<Control> {
 
 impl Control {
     /// Whether the control can be used: the service settings need the service.
-    fn enabled(self, _config: &Config, online: bool) -> bool {
+    fn enabled(self, online: bool) -> bool {
         self.local() || online
     }
 
@@ -1217,7 +1217,7 @@ impl Settings {
     }
 
     fn enabled(&self, control: Control) -> bool {
-        control.enabled(&self.config, self.online())
+        control.enabled(self.online())
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Option<Hit> {
@@ -1357,10 +1357,10 @@ impl Settings {
             return Effect::None;
         }
         if key == VK_TAB {
-            let (config, online) = (self.config.clone(), self.online());
-            let order = focus_order(self.page, &config);
+            let online = self.online();
+            let order = focus_order(self.page, &self.config);
             self.set_focus(next_focus(&order, self.focus, !shift, |c| {
-                c.enabled(&config, online)
+                c.enabled(online)
             }));
             return Effect::None;
         }
@@ -2764,7 +2764,7 @@ mod tests {
             Some(Control::Interval)
         );
         // Offline, only the sidebar is reachable.
-        let online = |c: Control| c.enabled(&config, false);
+        let online = |c: Control| c.enabled(false);
         assert_eq!(
             next_focus(&order, Some(Control::Nav(Page::General)), true, online),
             Some(Control::Nav(Page::Overview))
@@ -2863,11 +2863,11 @@ mod tests {
     #[test]
     fn controls_need_the_service() {
         let config = Config::default();
-        assert!(!Control::Mode.enabled(&config, false));
-        assert!(Control::Mode.enabled(&config, true));
-        assert!(Control::Autostart.enabled(&config, false));
-        assert!(Control::Update.enabled(&config, false));
-        assert!(Control::Nav(Page::Alarm).enabled(&config, false));
+        assert!(!Control::Mode.enabled(false));
+        assert!(Control::Mode.enabled(true));
+        assert!(Control::Autostart.enabled(false));
+        assert!(Control::Update.enabled(false));
+        assert!(Control::Nav(Page::Alarm).enabled(false));
         let auto = Control::Mode.with_segment(&config, 2);
         assert_eq!(auto.mode, Mode::Auto);
         assert_eq!(Control::Mode.selected_segment(&auto), 2);
