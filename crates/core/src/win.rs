@@ -3,24 +3,23 @@
 use std::ffi::{CStr, OsStr};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, FreeLibrary, HANDLE, HMODULE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, FreeLibrary, HANDLE, HMODULE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    ProcessPowerThrottling, SetEvent, SetProcessInformation, WaitForMultipleObjects,
-    WaitForSingleObject,
+    ProcessPowerThrottling, SetProcessInformation, WaitForSingleObject,
 };
 
 /// Encodes a string as a null-terminated UTF-16 buffer.
@@ -63,19 +62,15 @@ impl Drop for Handle {
     }
 }
 
-/// A Win32 event object.
+/// A manual-reset Win32 event object, signaled by overlapped I/O.
 #[derive(Debug)]
 pub struct Event(Handle);
 
 impl Event {
-    /// Creates an unnamed event. A manual-reset event stays signaled once set.
-    pub fn new(manual_reset: bool) -> io::Result<Self> {
-        let raw = unsafe { CreateEventW(ptr::null(), manual_reset.into(), 0, ptr::null()) };
+    /// Creates an unnamed event.
+    pub fn new() -> io::Result<Self> {
+        let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
         Handle::new(raw).map(Self)
-    }
-
-    pub fn set(&self) {
-        unsafe { SetEvent(self.0.raw()) };
     }
 
     pub fn raw(&self) -> HANDLE {
@@ -86,25 +81,27 @@ impl Event {
     pub fn wait(&self, timeout: Duration) -> bool {
         unsafe { WaitForSingleObject(self.raw(), millis(timeout)) == WAIT_OBJECT_0 }
     }
-
-    pub fn is_set(&self) -> bool {
-        self.wait(Duration::ZERO)
-    }
 }
 
-/// A DLL from System32 loaded at runtime, so it costs nothing until it is needed. Freed on drop.
+/// A DLL loaded at runtime, so it costs nothing until it is needed. Freed on drop.
 #[derive(Debug)]
 pub struct Library(HMODULE);
 
 impl Library {
+    /// A DLL from System32.
     pub fn system(name: &str) -> io::Result<Self> {
-        let module = unsafe {
-            LoadLibraryExW(
-                wide(name).as_ptr(),
-                ptr::null_mut(),
-                LOAD_LIBRARY_SEARCH_SYSTEM32,
-            )
-        };
+        Self::load(name.as_ref(), LOAD_LIBRARY_SEARCH_SYSTEM32)
+    }
+
+    /// A DLL at an absolute path. Its own dependencies come from System32 and its own folder,
+    /// never from the application folder.
+    pub fn at(path: &Path) -> io::Result<Self> {
+        let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+        Self::load(path.as_os_str(), flags)
+    }
+
+    fn load(name: &OsStr, flags: u32) -> io::Result<Self> {
+        let module = unsafe { LoadLibraryExW(wide(name).as_ptr(), ptr::null_mut(), flags) };
         if module.is_null() {
             Err(io::Error::last_os_error())
         } else {
@@ -129,18 +126,6 @@ impl Library {
 impl Drop for Library {
     fn drop(&mut self) {
         unsafe { FreeLibrary(self.0) };
-    }
-}
-
-/// Waits until any of `events` is signaled and returns its index, or `None` on timeout.
-pub fn wait_any(events: &[&Event], timeout: Duration) -> Option<usize> {
-    let handles: Vec<HANDLE> = events.iter().map(|e| e.raw()).collect();
-    let result = unsafe {
-        WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, millis(timeout))
-    };
-    match result {
-        WAIT_TIMEOUT | WAIT_FAILED => None,
-        r => Some((r - WAIT_OBJECT_0) as usize).filter(|&i| i < handles.len()),
     }
 }
 
@@ -248,16 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn events_signal_and_time_out() {
-        let a = Event::new(true).unwrap();
-        let b = Event::new(false).unwrap();
-        assert_eq!(wait_any(&[&a, &b], Duration::from_millis(1)), None);
-        b.set();
-        assert_eq!(wait_any(&[&a, &b], Duration::ZERO), Some(1));
-        // Auto-reset: consumed by the previous wait.
-        assert!(!b.is_set());
-        a.set();
-        assert!(a.is_set());
-        assert!(a.is_set());
+    fn unsignaled_events_time_out() {
+        assert!(!Event::new().unwrap().wait(Duration::from_millis(1)));
     }
 }

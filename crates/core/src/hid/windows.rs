@@ -221,7 +221,7 @@ impl HidDevice {
         }
         Ok(Self {
             handle: open(&info.path, GENERIC_WRITE, FILE_FLAG_OVERLAPPED)?,
-            event: Event::new(true)?,
+            event: Event::new()?,
             buf: vec![0; info.output_report_len],
         })
     }
