@@ -26,9 +26,8 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CreateCompatibleBitmap,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
-    GetMonitorInfoW, HBITMAP, HDC, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SelectObject,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -52,7 +51,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::anim::{Span, Tween};
 use crate::autostart;
-use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight};
+use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight, pixel_bitmap};
 use crate::i18n::{self, LANGS, Lang, Strings, fill};
 use crate::preview::{self, Frame};
 use crate::theme::{self, Theme};
@@ -1206,21 +1205,6 @@ fn paint(hwnd: HWND) {
         DeleteDC(mem_dc);
         EndPaint(hwnd, &ps);
     }
-}
-
-/// A 32-bit top-down DIB and its pixels.
-fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
-    let mut bmi: BITMAPINFO = unsafe { mem::zeroed() };
-    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    let mut bits = ptr::null_mut();
-    let bitmap =
-        unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
-    (bitmap, bits.cast())
 }
 
 impl Settings {
