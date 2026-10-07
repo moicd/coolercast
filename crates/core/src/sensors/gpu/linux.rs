@@ -259,6 +259,10 @@ impl NvidiaSmi {
             .args(["--query-gpu=name", "--format=csv,noheader", "-i", "0"])
             .output()
             .map_err(|e| io::Error::new(e.kind(), format!("nvidia-smi: {e}")))?;
+        // It also fails like this when the driver is unusable, e.g. after an upgrade.
+        if !name.status.success() {
+            return Err(io::Error::other(format!("nvidia-smi: {}", name.status)));
+        }
         let name = String::from_utf8_lossy(&name.stdout).trim().to_owned();
         let mut child = Command::new("nvidia-smi")
             .args([

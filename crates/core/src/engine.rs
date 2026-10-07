@@ -337,20 +337,32 @@ impl Engine {
     }
 }
 
+/// How long a sensor may keep failing before it is closed and opened again. Opening it again is
+/// not tried more often than this either, so a GPU that is gone is not probed every refresh.
+const REOPEN_AFTER: Duration = Duration::from_secs(10);
+
 /// A sensor opened the first time a connected display needs it. If it cannot be opened, it is
-/// not tried again until the service restarts.
+/// not tried again until the service restarts. One that opened but then keeps failing to read,
+/// like the `nvidia-smi` helper exiting after a driver reload, is closed after [`REOPEN_AFTER`]
+/// and opened again, until it works.
 struct OnDemand<T> {
     name: &'static str,
     /// What the log says about the sensor once it is open.
     describe: fn(&T) -> String,
     state: SensorState<T>,
-    failing: bool,
+    /// When the sensor, as open now, started failing to read.
+    failing_since: Option<Instant>,
+    /// Whether the current run of read errors is logged; it ends with a good read, not with a
+    /// reopen, so a sensor that keeps failing is logged once.
+    logged: bool,
 }
 
 enum SensorState<T> {
     Unopened,
     Open(T),
     Unavailable,
+    /// Closed after failing; opened again once the time has come.
+    Reopen(Instant),
 }
 
 impl<T> OnDemand<T> {
@@ -359,7 +371,8 @@ impl<T> OnDemand<T> {
             name,
             describe,
             state: SensorState::Unopened,
-            failing: false,
+            failing_since: None,
+            logged: false,
         }
     }
 
@@ -371,22 +384,41 @@ impl<T> OnDemand<T> {
         }
     }
 
-    /// Reads the sensor if `wanted`, opening it on first use. Errors are logged once.
+    /// Reads the sensor if `wanted`, opening it on first use. A run of read errors is logged
+    /// once.
     fn sample<V>(
         &mut self,
         wanted: bool,
         open: impl FnOnce() -> io::Result<T>,
         read: impl FnOnce(&mut T) -> io::Result<Option<V>>,
     ) -> Option<V> {
+        self.sample_at(Instant::now(), wanted, open, read)
+    }
+
+    fn sample_at<V>(
+        &mut self,
+        now: Instant,
+        wanted: bool,
+        open: impl FnOnce() -> io::Result<T>,
+        read: impl FnOnce(&mut T) -> io::Result<Option<V>>,
+    ) -> Option<V> {
         if !wanted {
+            // Errors from before the pause do not count against the sensor afterwards.
+            self.failing_since = None;
             return None;
         }
-        if let SensorState::Unopened = self.state {
+        let reopening = matches!(self.state, SensorState::Reopen(at) if now >= at);
+        if reopening || matches!(self.state, SensorState::Unopened) {
             self.state = match open() {
                 Ok(sensor) => {
-                    info!("{}: {}", self.name, (self.describe)(&sensor));
+                    if !reopening {
+                        info!("{}: {}", self.name, (self.describe)(&sensor));
+                    }
+                    self.failing_since = None;
                     SensorState::Open(sensor)
                 }
+                // The read errors that closed the sensor are logged already.
+                Err(_) if reopening => SensorState::Reopen(now + REOPEN_AFTER),
                 Err(e) => {
                     warn!("{} unavailable: {e}", self.name);
                     SensorState::Unavailable
@@ -398,13 +430,18 @@ impl<T> OnDemand<T> {
         };
         match read(sensor) {
             Ok(value) => {
-                self.failing = false;
+                self.failing_since = None;
+                self.logged = false;
                 value
             }
             Err(e) => {
-                if !self.failing {
+                if !self.logged {
                     warn!("{} read failed: {e}", self.name);
-                    self.failing = true;
+                    self.logged = true;
+                }
+                let since = *self.failing_since.get_or_insert(now);
+                if now - since >= REOPEN_AFTER {
+                    self.state = SensorState::Reopen(now);
                 }
                 None
             }
@@ -677,6 +714,131 @@ mod tests {
         let fail = || Err(io::Error::other("no driver"));
         assert_eq!(broken.sample(true, fail, read), None);
         assert_eq!(broken.sample(true, || unreachable!(), read), None);
+    }
+
+    #[test]
+    fn a_sensor_that_keeps_failing_is_opened_again() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (up, opens) = (Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            if up.get() {
+                Ok(opens.get())
+            } else {
+                Err(io::Error::other("driver gone"))
+            }
+        };
+        let read = |opened: &mut u32| {
+            if up.get() {
+                Ok(Some(*opened))
+            } else {
+                Err(io::Error::other("exited"))
+            }
+        };
+        let mut sensor = OnDemand::<u32>::new("flaky", |v| v.to_string());
+        let mut sample = |secs| sensor.sample_at(at(secs), true, open, read);
+
+        assert_eq!(sample(0), Some(1));
+        up.set(false);
+        // Failing for less than ten seconds: kept.
+        assert_eq!((sample(1), sample(5), sample(10)), (None, None, None));
+        assert_eq!(opens.get(), 1);
+        // Closed at 11 s, opened again at the next sample, which fails.
+        assert_eq!((sample(11), opens.get()), (None, 1));
+        assert_eq!((sample(12), opens.get()), (None, 2));
+        // Not again for ten seconds.
+        assert_eq!((sample(13), sample(21)), (None, None));
+        assert_eq!(opens.get(), 2);
+        // The driver is back.
+        up.set(true);
+        assert_eq!((sample(22), opens.get()), (Some(3), 3));
+        assert_eq!((sample(23), opens.get()), (Some(3), 3));
+    }
+
+    #[test]
+    fn a_short_failure_does_not_close_the_sensor() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (up, opens) = (Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            Ok(1.5)
+        };
+        let read = |v: &mut f32| {
+            if up.get() {
+                Ok(Some(*v))
+            } else {
+                Err(io::Error::other("blip"))
+            }
+        };
+        let mut sensor = OnDemand::<f32>::new("blip", |v| v.to_string());
+        let mut sample = |secs| sensor.sample_at(at(secs), true, open, read);
+
+        assert_eq!(sample(0), Some(1.5));
+        up.set(false);
+        assert_eq!(sample(1), None);
+        up.set(true);
+        assert_eq!(sample(9), Some(1.5));
+        // The run of errors started over: this one is not 11 s old.
+        up.set(false);
+        assert_eq!(sample(12), None);
+        assert_eq!(sample(20), None);
+        up.set(true);
+        assert_eq!(sample(21), Some(1.5));
+        assert_eq!(opens.get(), 1);
+    }
+
+    #[test]
+    fn a_reopened_or_paused_sensor_gets_its_full_grace_time() {
+        use std::cell::Cell;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let (opens_ok, reads_ok, opens) = (Cell::new(true), Cell::new(true), Cell::new(0));
+        let open = || {
+            opens.set(opens.get() + 1);
+            if opens_ok.get() {
+                Ok(())
+            } else {
+                Err(io::Error::other("gone"))
+            }
+        };
+        let read = |_: &mut ()| {
+            if reads_ok.get() {
+                Ok(Some(1))
+            } else {
+                Err(io::Error::other("failed"))
+            }
+        };
+        let mut sensor = OnDemand::<()>::new("flaky", |_| String::new());
+        let mut sample = |secs, wanted| sensor.sample_at(at(secs), wanted, open, read);
+
+        assert_eq!(sample(0, true), Some(1));
+        // Closed at 11 s; reopening at 12 s fails, so the next try is at 22 s.
+        opens_ok.set(false);
+        reads_ok.set(false);
+        assert_eq!(
+            (sample(1, true), sample(11, true), sample(12, true)),
+            (None, None, None)
+        );
+        // At 22 s it opens but still cannot read: it gets ten seconds from now, not from 1 s.
+        opens_ok.set(true);
+        assert_eq!((sample(22, true), sample(31, true)), (None, None));
+        assert_eq!(opens.get(), 3);
+        assert_eq!((sample(32, true), opens.get()), (None, 3));
+        reads_ok.set(true);
+        assert_eq!((sample(33, true), opens.get()), (Some(1), 4));
+
+        // A failure, a long pause while no display needs the sensor, then another failure: the
+        // pause does not count as failing time.
+        reads_ok.set(false);
+        assert_eq!(sample(34, true), None);
+        assert_eq!(sample(100, false), None);
+        assert_eq!((sample(200, true), sample(205, true)), (None, None));
+        reads_ok.set(true);
+        assert_eq!((sample(206, true), opens.get()), (Some(1), 4));
     }
 
     #[test]
