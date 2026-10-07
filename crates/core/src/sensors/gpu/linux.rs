@@ -232,13 +232,7 @@ fn files(card: &Card) -> Files {
 }
 
 fn first_dir(dir: &Path) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    dirs.sort();
-    dirs.into_iter().next()
+    fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).min()
 }
 
 fn first_temp_input(hwmon: &Path) -> Option<PathBuf> {
@@ -333,14 +327,12 @@ impl Drop for NvidiaSmi {
 /// Parses `temperature, utilization, power, clock`; unsupported fields read `[N/A]`.
 fn parse_smi_line(line: &str) -> Option<Values> {
     let mut fields = line.split(',').map(|f| f.trim().parse::<f32>().ok());
-    let mut next = || fields.next();
-    let readings = Values {
-        temp: next()?,
-        usage: next()?,
-        power: next()?,
-        freq: next()?,
-    };
-    Some(readings)
+    Some(Values {
+        temp: fields.next()?,
+        usage: fields.next()?,
+        power: fields.next()?,
+        freq: fields.next()?,
+    })
 }
 
 #[cfg(test)]
