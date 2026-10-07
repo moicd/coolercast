@@ -1,11 +1,12 @@
-//! Settings window, custom drawn with GDI+ in a liquid glass style: a floating sidebar whose
-//! selection slides between pages, an overview page with a live preview of the cooler display and
-//! the recent history, and pages of rounded setting cards.
+//! Settings window, custom drawn with GDI+ in a flat style close to the Windows 11 settings: a
+//! sidebar whose selection slides between pages, an overview page with a live preview of the
+//! cooler display and the recent history, and pages of setting cards. Surfaces are a single fill
+//! with a hairline outline: no shadows, gradients or highlights.
 //!
-//! On Windows 11 (22H2 and later) the window uses the Acrylic system backdrop and draws its
-//! surfaces as translucent glass on top; elsewhere it falls back to opaque colors. The blur is
-//! composed by Windows, so it costs this process nothing. Motion follows the Windows animation
-//! effects setting, and the window only repaints while something moves.
+//! On Windows 11 (22H2 and later) the window uses the Mica system backdrop and draws its surfaces
+//! as light translucent fills on top; elsewhere it falls back to opaque colors. Mica is composed
+//! by Windows, so it costs this process nothing. Motion follows the Windows animation effects
+//! setting, and the window only repaints while something moves.
 //!
 //! The window only exists while it is open; closing it releases GDI+ and every drawing resource,
 //! so the tray icon alone stays as small as before.
@@ -22,7 +23,7 @@ use coolercast_core::ipc::{DisplayOff, HISTORY_LEN, Shown, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{
-    DWMSBT_TRANSIENTWINDOW, DWMWA_CAPTION_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMSBT_MAINWINDOW, DWMWA_CAPTION_COLOR, DWMWA_SYSTEMBACKDROP_TYPE,
     DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
@@ -71,7 +72,7 @@ const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 // Layout, in device-independent pixels: a navigation sidebar and the page on its right.
 const WIDTH: f32 = 900.0;
 const HEIGHT: f32 = 620.0;
-/// The sidebar floats as a glass panel this far from the window edges.
+/// Margin between the window edges and its content.
 const INSET: f32 = 12.0;
 const SIDEBAR_W: f32 = 220.0;
 const PAGE_X: f32 = INSET + SIDEBAR_W + 20.0;
@@ -83,8 +84,12 @@ const SETTING_H: f32 = 64.0;
 /// Each extra line of a wrapped description.
 const LINE_H: f32 = 16.0;
 const SETTING_GAP: f32 = 8.0;
-const CARD_RADIUS: f32 = 18.0;
-/// Height of the capsule controls.
+const CARD_RADIUS: f32 = 8.0;
+/// Corner radius of the sidebar items and of the controls on the cards; switches stay round.
+const CONTROL_RADIUS: f32 = 6.0;
+/// Pieces inside a control or the language list: segments, stepper buttons, list entries.
+const INNER_RADIUS: f32 = 4.0;
+/// Height of the controls.
 const CONTROL_H: f32 = 32.0;
 const SWITCH_W: f32 = 46.0;
 const SWITCH_H: f32 = 28.0;
@@ -371,6 +376,19 @@ impl Control {
             _ => {}
         }
         config
+    }
+
+    /// Whether the setting is an on/off switch.
+    fn is_switch(self) -> bool {
+        matches!(
+            self,
+            Control::Autostart
+                | Control::Bar
+                | Control::OffLocked
+                | Control::OffScreen
+                | Control::OffNight
+                | Control::Alarm
+        )
     }
 
     /// Whether a switch control is on.
@@ -929,9 +947,10 @@ fn window_size(dpi: u32, zoom: f32) -> (i32, i32) {
     (rect.right - rect.left, rect.bottom - rect.top)
 }
 
-/// Turns on the Acrylic backdrop behind the whole window. Fails before Windows 11 22H2.
+/// Turns on the Mica backdrop behind the whole window, the material Windows 11 uses for
+/// long-lived windows (Acrylic is meant for menus and flyouts). Fails before Windows 11 22H2.
 fn enable_backdrop(hwnd: HWND) -> bool {
-    let kind = DWMSBT_TRANSIENTWINDOW;
+    let kind = DWMSBT_MAINWINDOW;
     let set = unsafe {
         DwmSetWindowAttribute(
             hwnd,
@@ -1645,19 +1664,11 @@ impl Settings {
         value
     }
 
-    /// A floating glass surface: soft shadow, fill fading downwards and a lit rim.
-    fn draw_glass(&self, c: &Canvas, r: Rect, radius: f32, depth: f32) {
-        let t = &self.theme;
-        c.shadow(r, radius, depth, t.shadow);
-        c.fill_round_rect_v(r, radius, t.card_top, t.card_bottom);
-        c.stroke_round_rect_v(r, radius, 1.0, t.edge_top, t.edge_bottom);
-    }
-
+    /// The sidebar, straight on the window backdrop.
     fn draw_sidebar(&mut self, c: &Canvas) {
         let t = self.theme;
         let tx = i18n::text();
         let panel = Rect::new(INSET, INSET, SIDEBAR_W, HEIGHT - 2.0 * INSET);
-        self.draw_glass(c, panel, 22.0, 14.0);
         draw_app_icon(c, Rect::new(28.0, 30.0, 40.0, 40.0));
         let text_x = 80.0;
         let text_w = panel.right() - text_x - 12.0;
@@ -1732,18 +1743,18 @@ impl Settings {
         {
             let (top, bottom) = pill.value(now);
             let r = Rect::new(item(0).x, top, item(0).w, bottom - top);
-            c.fill_round_rect(r, NAV_H / 2.0, faded(t.hover, alpha));
+            c.fill_round_rect(r, CONTROL_RADIUS, faded(t.hover, alpha));
         }
 
-        // The selection pill slides to the chosen page, stretching on the way.
+        // The selection slides to the chosen page, with the accent mark on its left edge.
         let target = item(selected);
         let (pill, (top, bottom)) = self.glide(self.nav_pill, (target.y, target.bottom()));
         self.nav_pill = Some(pill);
         let pill = Rect::new(target.x, top, target.w, bottom - top);
-        let radius = NAV_H / 2.0;
-        c.fill_round_rect(pill, radius, t.selection);
-        self.gloss(c, pill, radius);
-        c.stroke_round_rect_v(pill, radius, 1.0, t.edge_top, t.edge_top.alpha(0));
+        c.fill_round_rect(pill, CONTROL_RADIUS, t.selection);
+        let mark_h = 16.0;
+        let mark = Rect::new(pill.x, pill.y + (pill.h - mark_h) / 2.0, 3.0, mark_h);
+        c.fill_round_rect(mark, 1.5, t.accent);
 
         for (i, &page) in PAGES.iter().enumerate() {
             let r = item(i);
@@ -1763,7 +1774,7 @@ impl Settings {
                 Rect::new(r.x + 14.0, r.y, 20.0, r.h),
                 16.0,
                 Weight::Icon,
-                if on && text == t.text { t.accent } else { text },
+                text,
                 Align::Center,
             );
             c.text(
@@ -1779,7 +1790,7 @@ impl Settings {
                 Align::Left,
             );
             if self.focus_visible && self.focus == Some(hit.control) {
-                c.stroke_round_rect(r.inset(-2.0, -2.0), radius + 2.0, 2.0, t.focus);
+                c.stroke_round_rect(r.inset(-2.0, -2.0), CONTROL_RADIUS + 2.0, 2.0, t.focus);
             }
             self.hits.push((hit, r));
         }
@@ -1817,18 +1828,11 @@ impl Settings {
         }
     }
 
+    /// A flat card with a hairline outline.
     fn draw_card(&self, c: &Canvas, r: Rect) {
-        self.draw_glass(c, r, CARD_RADIUS, 10.0);
-    }
-
-    /// The glassy sheen on raised and accent-filled controls: a highlight fading out over the
-    /// top half. It fills the control's own shape: a shorter capsule has tighter ends and would
-    /// stick out past the control's shoulders.
-    fn gloss(&self, c: &Canvas, r: Rect, radius: f32) {
-        if self.theme.glass {
-            let white = Color::rgb(0xFF, 0xFF, 0xFF);
-            c.fill_round_rect_fade(r, radius, white.alpha(0x40), 0.55);
-        }
+        let t = &self.theme;
+        c.fill_round_rect(r, CARD_RADIUS, t.card);
+        c.stroke_round_rect(r, CARD_RADIUS, 1.0, t.edge);
     }
 
     /// Inside the hero card: the AK preview and what it shows on the left, the values on the
@@ -2077,7 +2081,7 @@ impl Settings {
         let mut area = points.to_vec();
         area.push((last, baseline));
         area.push((first, baseline));
-        c.fill_polygon(&area, self.theme.temp_line.alpha(0x30));
+        c.fill_polygon(&area, self.theme.temp_line.alpha(0x1C));
         c.polyline(points, 2.0, self.theme.temp_line);
     }
 
@@ -2167,14 +2171,18 @@ impl Settings {
             fade(t.text_dim, enabled),
         );
         if self.focus_visible && self.focus == Some(control) {
-            self.focus_ring(c, area);
+            let radius = if control.is_switch() {
+                SWITCH_H / 2.0
+            } else {
+                CONTROL_RADIUS
+            };
+            self.focus_ring(c, area, radius);
         }
     }
 
-    /// The keyboard focus, as a capsule around the control.
-    fn focus_ring(&self, c: &Canvas, r: Rect) {
-        let r = r.inset(-3.0, -3.0);
-        c.stroke_round_rect(r, r.h / 2.0, 2.0, self.theme.focus);
+    /// The keyboard focus, as an outline around a control with corners of `radius`.
+    fn focus_ring(&self, c: &Canvas, r: Rect, radius: f32) {
+        c.stroke_round_rect(r.inset(-3.0, -3.0), radius + 3.0, 2.0, self.theme.focus);
     }
 
     fn state(&self, hit: Hit) -> (bool, bool) {
@@ -2197,7 +2205,7 @@ impl Settings {
             | Control::OffNight
             | Control::Alarm => SWITCH_W + 10.0 + switch_label_w(c, tx),
             Control::Update => update_w(c, &self.update, tx),
-            Control::UseCustom => capsule_w(c, tx.show_it),
+            Control::UseCustom => button_w(c, tx.show_it),
             Control::Language => dropdown_w(c, &language_label(i18n::choice(), tx)),
             Control::CustomValue
             | Control::CustomBar
@@ -2210,7 +2218,7 @@ impl Settings {
         }
     }
 
-    /// Options in a capsule, with a raised thumb that slides to the selected one.
+    /// Options side by side in one field; the selected one is a flat thumb that slides to it.
     fn draw_segmented(
         &mut self,
         c: &Canvas,
@@ -2225,9 +2233,8 @@ impl Settings {
         let widths = segment_widths(c, control, tx);
         let total = widths.iter().sum::<f32>() + 6.0;
         let track = Rect::new(right - total, cy - CONTROL_H / 2.0, total, CONTROL_H);
-        c.fill_round_rect(track, CONTROL_H / 2.0, fade(t.control, enabled));
+        self.draw_field(c, track, false, false, enabled);
         let inner_h = CONTROL_H - 6.0;
-        let radius = inner_h / 2.0;
         let mut rects = Vec::with_capacity(widths.len());
         let mut x = track.x + 3.0;
         for &w in &widths {
@@ -2244,20 +2251,11 @@ impl Settings {
             let ((a, b), running) = (span.value(now), span.running(now));
             self.animating |= running;
             let thumb = Rect::new(a, target.y, b - a, target.h);
-            if enabled {
-                c.shadow(thumb, radius, 4.0, t.shadow);
+            c.fill_round_rect(thumb, INNER_RADIUS, fade(t.thumb, enabled));
+            // On light themes the white thumb needs its outline to stand out from the card.
+            if !t.dark {
+                c.stroke_round_rect(thumb, INNER_RADIUS, 1.0, fade(t.edge, enabled));
             }
-            c.fill_round_rect(thumb, radius, fade(t.thumb, enabled));
-            if enabled {
-                self.gloss(c, thumb, radius);
-            }
-            c.stroke_round_rect_v(
-                thumb,
-                radius,
-                1.0,
-                fade(t.edge_top, enabled),
-                t.edge_top.alpha(0),
-            );
         }
         for (i, (&option, &r)) in options.iter().zip(&rects).enumerate() {
             let hit = Hit {
@@ -2267,12 +2265,12 @@ impl Settings {
             let (hovered, _) = self.state(hit);
             let on = i == selected;
             if hovered && !on {
-                c.fill_round_rect(r, radius, t.hover);
+                c.fill_round_rect(r, INNER_RADIUS, t.hover);
             }
             let (color, weight) = if on {
                 (t.on_thumb, Weight::Semibold)
             } else {
-                (t.text, Weight::Regular)
+                (t.text_dim, Weight::Regular)
             };
             c.text(option, r, 12.5, weight, fade(color, enabled), Align::Center);
             self.hits.push((hit, r));
@@ -2280,7 +2278,8 @@ impl Settings {
         track
     }
 
-    /// A switch whose knob slides across while the track fills with the accent.
+    /// A switch as in Windows 11: an outlined track with a dim knob while off, filled with the
+    /// accent while on; the knob slides across.
     fn draw_switch(
         &mut self,
         c: &Canvas,
@@ -2298,32 +2297,20 @@ impl Settings {
         };
         let (hovered, _) = self.state(hit);
         let k = self.tween(|s| &mut s.knobs, control, f32::from(u8::from(on)), 260.0);
-        let fill_k = k.clamp(0.0, 1.0);
         let track = Rect::new(right - SWITCH_W, cy - SWITCH_H / 2.0, SWITCH_W, SWITCH_H);
         let radius = SWITCH_H / 2.0;
-        c.fill_round_rect(
-            track,
-            radius,
-            fade(t.control.mix(t.accent, fill_k), enabled),
-        );
-        if fill_k < 1.0 {
-            let outline = faded(t.border, 1.0 - fill_k);
+        c.fill_round_rect(track, radius, fade(t.control.mix(t.accent, k), enabled));
+        if k < 1.0 {
+            let outline = faded(t.border, 1.0 - k);
             c.stroke_round_rect(track, radius, 1.0, fade(outline, enabled));
-        }
-        if enabled && fill_k > 0.5 {
-            self.gloss(c, track, radius);
         }
         if hovered && enabled {
             c.fill_round_rect(track, radius, t.hover);
         }
-        let knob_r = radius - 3.0;
+        let knob_r = radius - 4.0;
         let cx = track.x + radius + k * (SWITCH_W - SWITCH_H);
-        let knob = Rect::new(cx - knob_r, cy - knob_r, 2.0 * knob_r, 2.0 * knob_r);
-        if enabled {
-            c.shadow(knob, knob_r, 3.0, t.shadow);
-        }
-        c.fill_circle(cx, cy, knob_r, fade(t.knob, enabled));
-        c.stroke_round_rect(knob, knob_r, 1.0, fade(faded(t.border, 0.8), enabled));
+        let knob = t.text_dim.mix(t.on_accent, k);
+        c.fill_circle(cx, cy, knob_r, fade(knob, enabled));
 
         let label_w = switch_label_w(c, tx);
         let label = Rect::new(track.x - 10.0 - label_w, cy - 10.0, label_w, 20.0);
@@ -2341,7 +2328,7 @@ impl Settings {
         track
     }
 
-    /// A capsule push button, right-aligned at `right`.
+    /// A push button, right-aligned at `right`.
     fn draw_button(
         &mut self,
         c: &Canvas,
@@ -2352,14 +2339,14 @@ impl Settings {
         enabled: bool,
     ) -> Rect {
         let t = self.theme;
-        let w = capsule_w(c, label);
+        let w = button_w(c, label);
         let r = Rect::new(right - w, cy - CONTROL_H / 2.0, w, CONTROL_H);
         let hit = Hit {
             control,
             part: Part::Button,
         };
         let (hovered, pressed) = self.state(hit);
-        self.draw_capsule(c, r, hovered && enabled, pressed, enabled);
+        self.draw_field(c, r, hovered && enabled, pressed, enabled);
         c.text(
             label,
             r,
@@ -2372,23 +2359,17 @@ impl Settings {
         r
     }
 
-    /// The raised capsule of buttons.
-    fn draw_capsule(&self, c: &Canvas, r: Rect, hovered: bool, pressed: bool, enabled: bool) {
+    /// The flat fill of buttons and fields, darker under the mouse and while pressed. Only high
+    /// contrast outlines it.
+    fn draw_field(&self, c: &Canvas, r: Rect, hovered: bool, pressed: bool, enabled: bool) {
         let t = &self.theme;
-        let radius = r.h / 2.0;
-        c.fill_round_rect(r, radius, fade(t.control, enabled));
+        c.fill_round_rect(r, CONTROL_RADIUS, fade(t.control, enabled));
         if pressed {
-            c.fill_round_rect(r, radius, t.control_hover);
+            c.fill_round_rect(r, CONTROL_RADIUS, t.control_hover);
         } else if hovered {
-            c.fill_round_rect(r, radius, t.hover);
+            c.fill_round_rect(r, CONTROL_RADIUS, t.hover);
         }
-        c.stroke_round_rect_v(
-            r,
-            radius,
-            1.0,
-            fade(t.edge_top, enabled),
-            fade(t.border, enabled),
-        );
+        c.stroke_round_rect(r, CONTROL_RADIUS, 1.0, fade(t.outline, enabled));
     }
 
     /// The update button, right-aligned at `right`; filled with the accent when a new version
@@ -2406,26 +2387,21 @@ impl Settings {
         let (hovered, pressed) = self.state(hit);
         let busy = self.update == UpdateState::Checking;
         let (weight, text) = if available {
-            let radius = r.h / 2.0;
-            c.fill_round_rect(r, radius, t.accent);
-            self.gloss(c, r, radius);
+            c.fill_round_rect(r, CONTROL_RADIUS, t.accent);
             if hovered {
-                c.fill_round_rect(r, radius, t.hover);
+                c.fill_round_rect(r, CONTROL_RADIUS, t.hover);
             }
             (Weight::Semibold, t.on_accent)
         } else {
-            self.draw_capsule(c, r, hovered && !busy, pressed, true);
+            self.draw_field(c, r, hovered && !busy, pressed, true);
             (Weight::Regular, if busy { t.text_dim } else { t.text })
         };
         c.text(&label, r, 12.5, weight, text, Align::Center);
-        if self.focus_visible && self.focus == Some(Control::Update) {
-            self.focus_ring(c, r);
-        }
         self.hits.push((hit, r));
         r
     }
 
-    /// A capsule that opens a list, right-aligned at `right`.
+    /// A button that opens a list, right-aligned at `right`.
     fn draw_dropdown(&mut self, c: &Canvas, label: &str, right: f32, cy: f32) -> Rect {
         let t = self.theme;
         let w = dropdown_w(c, label);
@@ -2435,7 +2411,7 @@ impl Settings {
             part: Part::Button,
         };
         let (hovered, pressed) = self.state(hit);
-        self.draw_capsule(c, r, hovered, pressed || self.menu.is_some(), true);
+        self.draw_field(c, r, hovered, pressed || self.menu.is_some(), true);
         c.text(
             label,
             Rect::new(r.x + 16.0, r.y, r.w - 46.0, r.h),
@@ -2456,7 +2432,7 @@ impl Settings {
         r
     }
 
-    /// The open language list, a glass panel under its button.
+    /// The open language list, an outlined panel under its button.
     fn draw_menu(&mut self, c: &Canvas) {
         let Some(&(_, anchor)) = self
             .hits
@@ -2481,12 +2457,9 @@ impl Settings {
         let x = anchor.right() - w;
         let y = (anchor.bottom() + 6.0).min(HEIGHT - INSET - h).max(INSET);
         let panel = Rect::new(x, y, w, h);
-        let radius = 16.0;
-        // Nearly opaque, so the cards behind it do not get in the way of reading.
-        c.shadow(panel, radius, 18.0, t.shadow);
-        c.fill_round_rect(panel, radius, t.background.alpha(0xF0));
-        c.fill_round_rect_v(panel, radius, t.card_top, t.card_bottom);
-        c.stroke_round_rect_v(panel, radius, 1.0, t.edge_top, t.edge_bottom);
+        // Opaque, so the cards behind it do not get in the way of reading.
+        c.fill_round_rect(panel, CARD_RADIUS, t.background);
+        self.draw_card(c, panel);
         let item = |i: usize| {
             Rect::new(
                 x + MENU_PAD,
@@ -2500,7 +2473,7 @@ impl Settings {
             let (pill, (top, bottom)) = self.glide(self.menu_pill, (r.y, r.bottom()));
             self.menu_pill = Some(pill);
             let pill = Rect::new(r.x, top, r.w, bottom - top);
-            c.fill_round_rect(pill, MENU_ITEM_H / 2.0, t.control_hover);
+            c.fill_round_rect(pill, INNER_RADIUS, t.control_hover);
         }
         for (i, (choice, label)) in items.iter().enumerate() {
             let r = item(i);
@@ -2526,7 +2499,7 @@ impl Settings {
         }
     }
 
-    /// A number between round − and + buttons, in one capsule.
+    /// A number between − and + buttons, in one field.
     fn draw_stepper(
         &mut self,
         c: &Canvas,
@@ -2543,7 +2516,7 @@ impl Settings {
             STEPPER_W,
             CONTROL_H,
         );
-        c.fill_round_rect(area, CONTROL_H / 2.0, fade(t.control, enabled));
+        self.draw_field(c, area, false, false, enabled);
         let d = CONTROL_H - 6.0;
         let buttons = [
             (Part::Minus, Rect::new(area.x + 3.0, area.y + 3.0, d, d)),
@@ -2557,17 +2530,13 @@ impl Settings {
             let (hovered, pressed) = self.state(hit);
             let can_step = control.stepped(&self.config, part == Part::Plus).is_some();
             let active = enabled && can_step;
-            if active {
-                c.shadow(r, d / 2.0, 3.0, t.shadow);
-            }
-            c.fill_round_rect(r, d / 2.0, fade(t.thumb, active));
             if pressed {
-                c.fill_round_rect(r, d / 2.0, t.control_hover);
+                c.fill_round_rect(r, INNER_RADIUS, t.control_hover);
             } else if hovered && active {
-                c.fill_round_rect(r, d / 2.0, t.hover);
+                c.fill_round_rect(r, INNER_RADIUS, t.hover);
             }
             let (mx, my) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-            let glyph = fade(t.on_thumb, active);
+            let glyph = fade(t.text, active);
             c.line(mx - 5.0, my, mx + 5.0, my, 1.5, glyph);
             if part == Part::Plus {
                 c.line(mx, my - 5.0, mx, my + 5.0, 1.5, glyph);
@@ -2587,10 +2556,10 @@ impl Settings {
                 .0;
             let inner = field.inset(0.0, 3.0);
             if hovered && enabled {
-                c.fill_round_rect(inner, inner.h / 2.0, t.hover);
+                c.fill_round_rect(inner, INNER_RADIUS, t.hover);
             }
             if enabled && self.focus == Some(control) {
-                c.stroke_round_rect(inner, inner.h / 2.0, 1.5, t.accent);
+                c.stroke_round_rect(inner, INNER_RADIUS, 1.5, t.accent);
             }
         }
         c.text(
@@ -2633,7 +2602,7 @@ fn switch_label_w(c: &Canvas, tx: &Strings) -> f32 {
         .ceil()
 }
 
-fn capsule_w(c: &Canvas, label: &str) -> f32 {
+fn button_w(c: &Canvas, label: &str) -> f32 {
     (c.measure(label, 13.0, Weight::Regular) + 36.0).round()
 }
 
@@ -2801,6 +2770,17 @@ mod tests {
                 .off_when_screen_off
         );
         assert_eq!(Control::Mode.toggled(&config), None);
+    }
+
+    #[test]
+    fn switches_are_the_settings_that_toggle() {
+        let config = Config::default();
+        for page in PAGES {
+            for &c in page.settings() {
+                let toggles = c == Control::Autostart || c.toggled(&config).is_some();
+                assert_eq!(c.is_switch(), toggles, "{c:?}");
+            }
+        }
     }
 
     #[test]

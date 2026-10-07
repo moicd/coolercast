@@ -1,5 +1,5 @@
 //! Simulated AK series display: the 10-step bar on top, three seven-segment digits and the unit
-//! symbols under it, lit the same way as the real one.
+//! symbols next to them, lit or dark as on the real one.
 
 use coolercast_core::config::{Bar, Config, Symbol, Unit};
 use coolercast_core::device::{self, Component, Family, ak};
@@ -105,12 +105,7 @@ const BASE_W: f32 = 184.0;
 /// Draws the display in `area`, scaled to its width.
 pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     let k = area.w / BASE_W;
-    let radius = 10.0 * k;
-    c.fill_round_rect(area, radius, PANEL);
-    // Reflection on the cover glass, over the top of the panel.
-    let white = Color::rgb(0xFF, 0xFF, 0xFF);
-    let sheen = Rect::new(area.x, area.y, area.w, area.h * 0.5);
-    c.fill_round_rect_v(sheen, radius, white.alpha(0x14), white.alpha(0x00));
+    c.fill_round_rect(area, 10.0 * k, PANEL);
 
     let digit_w = 30.0 * k;
     let digit_h = 54.0 * k;
@@ -131,12 +126,8 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
         let color = match (i < level, alarm) {
             (true, true) => ALARM,
             (true, false) => LIT,
-            _ => {
-                c.fill_round_rect(r, 2.0 * k, UNLIT);
-                continue;
-            }
+            _ => UNLIT,
         };
-        c.fill_round_rect(r.inset(-2.5 * k, -2.5 * k), 4.0 * k, color.alpha(0x1C));
         c.fill_round_rect(r, 2.0 * k, color);
     }
 
@@ -160,41 +151,10 @@ pub fn draw(c: &Canvas, area: Rect, frame: Option<Frame>) {
     .enumerate()
     {
         let r = Rect::new(sx, y0 + i as f32 * 18.0 * k, symbols_w, 18.0 * k);
-        let on = symbol == Some(s);
-        if on {
-            glow_text(c, label, r, 14.0 * k, k);
-        }
-        let color = if on { LIT } else { UNLIT };
+        let color = if symbol == Some(s) { LIT } else { UNLIT };
         c.text(label, r, 14.0 * k, Weight::Semibold, color, Align::Left);
     }
 }
-
-/// A soft halo behind lit text, like the light bleeding through the cover.
-fn glow_text(c: &Canvas, text: &str, r: Rect, size: f32, k: f32) {
-    for (dx, dy) in HALO {
-        let shifted = Rect::new(r.x + dx * k, r.y + dy * k, r.w, r.h);
-        c.text(
-            text,
-            shifted,
-            size,
-            Weight::Semibold,
-            LIT.alpha(0x1A),
-            Align::Left,
-        );
-    }
-}
-
-/// Offsets of the copies that make up a glow.
-const HALO: [(f32, f32); 8] = [
-    (-1.6, 0.0),
-    (1.6, 0.0),
-    (0.0, -1.6),
-    (0.0, 1.6),
-    (-1.1, -1.1),
-    (1.1, -1.1),
-    (-1.1, 1.1),
-    (1.1, 1.1),
-];
 
 fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
     let t = 5.0 * k; // segment thickness
@@ -230,15 +190,8 @@ fn draw_digit(c: &Canvas, x: f32, y: f32, w: f32, h: f32, k: f32, mask: u8) {
         hseg(x, y + half),           // g
     ];
     for (i, points) in segments.iter().enumerate() {
-        if mask & (1 << i) == 0 {
-            c.fill_polygon(points, UNLIT);
-            continue;
-        }
-        for (dx, dy) in HALO {
-            let shifted = points.map(|(px, py)| (px + dx * k, py + dy * k));
-            c.fill_polygon(&shifted, LIT.alpha(0x16));
-        }
-        c.fill_polygon(points, LIT);
+        let color = if mask & (1 << i) == 0 { UNLIT } else { LIT };
+        c.fill_polygon(points, color);
     }
 }
 
