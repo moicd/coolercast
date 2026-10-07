@@ -1822,12 +1822,12 @@ impl Settings {
     }
 
     /// The glassy sheen on raised and accent-filled controls: a highlight fading out over the
-    /// top half.
+    /// top half. It fills the control's own shape: a shorter capsule has tighter ends and would
+    /// stick out past the control's shoulders.
     fn gloss(&self, c: &Canvas, r: Rect, radius: f32) {
         if self.theme.glass {
-            let top = Rect::new(r.x, r.y, r.w, r.h * 0.55);
             let white = Color::rgb(0xFF, 0xFF, 0xFF);
-            c.fill_round_rect_v(top, radius, white.alpha(0x40), white.alpha(0x00));
+            c.fill_round_rect_fade(r, radius, white.alpha(0x40), 0.55);
         }
     }
 

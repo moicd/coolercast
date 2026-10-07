@@ -384,6 +384,21 @@ impl Canvas {
         unsafe { GdipDeletePath(path) };
     }
 
+    /// Fills a rounded rectangle with `color` at the top, fading out at `fraction` of its height.
+    /// The fade keeps the outline of the whole rectangle, round ends included.
+    pub fn fill_round_rect_fade(&self, r: Rect, radius: f32, color: Color, fraction: f32) {
+        let path = self.rounded_path(r, radius);
+        let device = self.r(r);
+        // Where the fade ends on the gradient, which `with_gradient` overscans by one pixel.
+        let end = (1.0 + fraction * device.h) / (device.h + 2.0);
+        let (factors, positions) = ([0.0, 1.0, 1.0], [0.0, end, 1.0]);
+        self.with_gradient(device, color, color.alpha(0), |b| unsafe {
+            GdipSetLineBlend(b.cast(), factors.as_ptr(), positions.as_ptr(), 3);
+            GdipFillPath(self.g, b, path);
+        });
+        unsafe { GdipDeletePath(path) };
+    }
+
     /// Outlines a rounded rectangle with a vertical gradient, inside the rectangle.
     pub fn stroke_round_rect_v(&self, r: Rect, radius: f32, width: f32, top: Color, bottom: Color) {
         if top == bottom {
