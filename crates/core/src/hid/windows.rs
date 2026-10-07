@@ -113,7 +113,7 @@ fn interface_path(
 
 /// Reads attributes, strings and report layout of one collection without write access.
 /// Collections of other vendors are skipped before the strings are requested: those are
-/// transfers to the device, and the service rescans every few seconds while no cooler is found.
+/// transfers to the device, and the service rescans every few seconds while a cooler is missing.
 fn query(path: &str, vendor_ids: &[u16]) -> Option<DeviceInfo> {
     let handle = open(path, 0, 0).ok()?;
     let h = handle.raw();

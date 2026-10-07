@@ -18,8 +18,12 @@ use crate::sensors::cpu_usage::CpuUsage;
 use crate::sensors::gpu::Gpu;
 use crate::{info, warn};
 
-/// How often to look for coolers while none is connected.
+/// How often to look for coolers while one is missing.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// How long after the start, or after losing a cooler, to keep looking for coolers although
+/// others work: a display that enumerates late, or comes back after a USB reset or a resume from
+/// sleep, takes a few seconds. With no cooler at all the search never ends.
+const RESCAN_WINDOW: Duration = Duration::from_secs(60);
 
 /// `source = "smart"` switches to the GPU above this usage...
 const SMART_GPU_ON: f32 = 50.0;
@@ -174,6 +178,7 @@ impl Engine {
         let mut coolers: Vec<Cooler> = Vec::new();
         let mut next_scan = Instant::now();
         let started = Instant::now();
+        let mut retry_until = started + RESCAN_WINDOW;
         let mut smart = Smart::default();
         let mut clock = LocalClock::default();
         let mut was_off = None;
@@ -182,8 +187,8 @@ impl Engine {
             self.reload_config_if_edited();
             let config = self.lock().config.clone();
 
-            if coolers.is_empty() && Instant::now() >= next_scan {
-                coolers = open_coolers();
+            if rescan_due(coolers.len(), Instant::now(), next_scan, retry_until) {
+                open_new_coolers(&mut coolers);
                 next_scan = Instant::now() + RESCAN_INTERVAL;
             }
 
@@ -259,6 +264,7 @@ impl Engine {
             }
             // Without reports the display goes dark by itself within a few seconds.
             if off.is_none() {
+                let open = coolers.len();
                 coolers.retain_mut(|cooler| match cooler.show(&update) {
                     Ok(()) => true,
                     Err(e) => {
@@ -266,6 +272,9 @@ impl Engine {
                         false
                     }
                 });
+                if coolers.len() < open {
+                    retry_until = Instant::now() + RESCAN_WINDOW;
+                }
             }
 
             {
@@ -407,21 +416,35 @@ fn modified(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn open_coolers() -> Vec<Cooler> {
+/// Whether to look for coolers now: when none is open, or until `retry_until`, but never more
+/// often than `next_scan` allows, since enumerating does device I/O.
+fn rescan_due(open: usize, now: Instant, next_scan: Instant, retry_until: Instant) -> bool {
+    now >= next_scan && (open == 0 || now < retry_until)
+}
+
+/// Opens the supported coolers that are not open yet, so a working one is never opened twice.
+/// The devices it skips are logged only while no cooler works, when they tell why; otherwise each
+/// rescan after a lost cooler would log them again.
+fn open_new_coolers(coolers: &mut Vec<Cooler>) {
+    let verbose = coolers.is_empty();
     let detected = match device::detect() {
         Ok(d) => d,
         Err(e) => {
             warn!("device enumeration failed: {e}");
-            return Vec::new();
+            return;
         }
     };
-    let mut coolers = Vec::new();
     for d in &detected {
+        if coolers.iter().any(|c| c.path() == d.info.path) {
+            continue;
+        }
         let Some(model) = d.model else {
-            info!(
-                "ignoring unsupported DeepCool device {:04X} '{}'",
-                d.info.product_id, d.info.product
-            );
+            if verbose {
+                info!(
+                    "ignoring unsupported DeepCool device {:04X} '{}'",
+                    d.info.product_id, d.info.product
+                );
+            }
             continue;
         };
         match Cooler::open(d).and_then(|mut c| c.init().map(|()| c)) {
@@ -429,10 +452,10 @@ fn open_coolers() -> Vec<Cooler> {
                 info!("connected {} (serial {})", model.name, cooler.serial());
                 coolers.push(cooler);
             }
-            Err(e) => warn!("cannot open {}: {e}", model.name),
+            Err(e) if verbose => warn!("cannot open {}: {e}", model.name),
+            Err(_) => {}
         }
     }
-    coolers
 }
 
 /// Why the display should be off now, if it should. `now` is the local time, when known.
@@ -726,6 +749,25 @@ mod tests {
         signal.raise(|f| f.stop = true);
         assert!(signal.wait(Duration::from_secs(5)));
         assert!(!Signal::default().wait(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn rescan_is_due_only_while_a_cooler_may_be_missing() {
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let window = at(RESCAN_WINDOW.as_secs());
+        // Nothing open: scan every interval, even long after the window.
+        assert!(rescan_due(0, at(0), at(0), t0));
+        assert!(!rescan_due(0, at(2), at(5), t0));
+        assert!(rescan_due(0, at(5), at(5), t0));
+        assert!(rescan_due(0, at(3600), at(3595), t0));
+        // One of two open, still inside the window: scan, but not before the interval.
+        assert!(rescan_due(1, at(5), at(5), window));
+        assert!(!rescan_due(1, at(4), at(5), window));
+        assert!(rescan_due(1, at(59), at(55), window));
+        // Window over: a working setup is not scanned any more.
+        assert!(!rescan_due(1, window, at(5), window));
+        assert!(!rescan_due(2, at(3600), at(5), window));
     }
 
     #[test]
