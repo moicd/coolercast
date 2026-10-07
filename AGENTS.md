@@ -49,12 +49,6 @@ target/debug/coolercast test    # test pattern on the display
 target/debug/coolercast run     # foreground loop; run elevated for the CPU temperature
 ```
 
-## Skills
-
-Project skills live in `.agents/skills` and are managed with
-[autoskills](https://github.com/midudev/autoskills) (`npx autoskills`); `skills-lock.json` pins them.
-Read `.agents/skills/rust-best-practices/SKILL.md` before writing or reviewing Rust code.
-
 ## Rules
 
 - Everything in the repository is written in English: code, comments, docs, commit messages.
