@@ -1405,8 +1405,9 @@ impl Settings {
             Control::Mode | Control::Source | Control::Unit | Control::CustomSymbol => {
                 let count = control.segments(i18n::text()).len();
                 let current = control.selected_segment(&self.config);
+                // The power mode has no segment, past the last one: forward stays put.
                 let index = if forward {
-                    (current + 1).min(count - 1)
+                    (current + 1).min(count - 1).max(current)
                 } else {
                     current.saturating_sub(1)
                 };
