@@ -6,7 +6,7 @@ use std::{env, mem, ptr};
 
 use crate::i18n::{self, fill};
 use crate::{autostart, icon, window};
-use coolercast_core::config::{Bar, Mode, Source, Unit};
+use coolercast_core::config::{Bar, Config, Mode, Source, Unit};
 use coolercast_core::ipc::{self, Status};
 use coolercast_core::win::wide;
 use windows_sys::Win32::Foundation::{
@@ -285,16 +285,19 @@ pub fn set_interactive(interactive: bool) {
 
 fn show_menu(hwnd: HWND) {
     // Copy what the menu needs: TrackPopupMenu runs a modal loop that re-enters window_proc.
-    let status = APP.with(|app| app.borrow().as_ref().and_then(|a| a.status.clone()));
+    let status = current_status();
+    let offline = Config::default();
+    let config = status.as_ref().map_or(&offline, |s| &s.config);
     let autostart = autostart::enabled();
     let tx = i18n::text();
     set_interactive(true);
 
     let command = unsafe {
         let menu = CreatePopupMenu();
+        // Only an enabled item shows its check mark: offline, the settings are unknown.
         let item = |menu: HMENU, id: usize, text: &str, checked: bool, enabled: bool| {
             let mut flags = MF_STRING;
-            if checked {
+            if checked && enabled {
                 flags |= MF_CHECKED;
             }
             if !enabled {
@@ -327,47 +330,16 @@ fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
 
         let online = status.is_some();
-        let config = status
-            .as_ref()
-            .map(|s| s.config.clone())
-            .unwrap_or_default();
-
         let modes = CreatePopupMenu();
-        item(
-            modes,
-            ID_MODE_TEMPERATURE,
-            tx.temperature,
-            online && config.mode == Mode::Temperature,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_USAGE,
-            tx.usage,
-            online && config.mode == Mode::Usage,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_AUTO,
-            tx.alternate,
-            online && config.mode == Mode::Auto,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_POWER,
-            tx.power_ls,
-            online && config.mode == Mode::Power,
-            online,
-        );
-        item(
-            modes,
-            ID_MODE_CUSTOM,
-            tx.custom_value,
-            online && config.mode == Mode::Custom,
-            online,
-        );
+        for (id, label, mode) in [
+            (ID_MODE_TEMPERATURE, tx.temperature, Mode::Temperature),
+            (ID_MODE_USAGE, tx.usage, Mode::Usage),
+            (ID_MODE_AUTO, tx.alternate, Mode::Auto),
+            (ID_MODE_POWER, tx.power_ls, Mode::Power),
+            (ID_MODE_CUSTOM, tx.custom_value, Mode::Custom),
+        ] {
+            item(modes, id, label, config.mode == mode, online);
+        }
         AppendMenuW(menu, MF_POPUP, modes as usize, wide(tx.display).as_ptr());
 
         let sources = CreatePopupMenu();
@@ -377,37 +349,23 @@ fn show_menu(hwnd: HWND) {
             (ID_SOURCE_AUTO, tx.alternate, Source::Auto),
             (ID_SOURCE_SMART, tx.gpu_while_busy, Source::Smart),
         ] {
-            item(
-                sources,
-                id,
-                label,
-                online && config.source == source,
-                online,
-            );
+            item(sources, id, label, config.source == source, online);
         }
         AppendMenuW(menu, MF_POPUP, sources as usize, wide(tx.device).as_ptr());
 
         let units = CreatePopupMenu();
-        item(
-            units,
-            ID_UNIT_CELSIUS,
-            tx.celsius,
-            online && config.unit == Unit::Celsius,
-            online,
-        );
-        item(
-            units,
-            ID_UNIT_FAHRENHEIT,
-            tx.fahrenheit,
-            online && config.unit == Unit::Fahrenheit,
-            online,
-        );
+        for (id, label, unit) in [
+            (ID_UNIT_CELSIUS, tx.celsius, Unit::Celsius),
+            (ID_UNIT_FAHRENHEIT, tx.fahrenheit, Unit::Fahrenheit),
+        ] {
+            item(units, id, label, config.unit == unit, online);
+        }
         AppendMenuW(menu, MF_POPUP, units as usize, wide(tx.unit).as_ptr());
         item(
             menu,
             ID_USAGE_BAR,
             tx.usage_bar,
-            online && config.bar == Bar::Usage,
+            config.bar == Bar::Usage,
             online,
         );
 
@@ -428,7 +386,7 @@ fn show_menu(hwnd: HWND) {
             ),
             (ID_OFF_NIGHT, night.as_str(), config.off_at_night),
         ] {
-            item(off, id, label, online && on, online);
+            item(off, id, label, on, online);
         }
         AppendMenuW(
             menu,
@@ -438,7 +396,7 @@ fn show_menu(hwnd: HWND) {
         );
 
         let alarm_label = fill(tx.alarm_at, &[&config.alarm_threshold.to_string()]);
-        item(menu, ID_ALARM, &alarm_label, online && config.alarm, online);
+        item(menu, ID_ALARM, &alarm_label, config.alarm, online);
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         item(menu, ID_AUTOSTART, tx.start_with_windows, autostart, true);
         item(menu, ID_EXIT, tx.exit, false, true);
@@ -461,10 +419,6 @@ fn show_menu(hwnd: HWND) {
     };
     set_interactive(window::is_open());
 
-    let config = status
-        .as_ref()
-        .map(|s| s.config.clone())
-        .unwrap_or_default();
     let toggle = |on: bool| if on { "off" } else { "on" };
     let setting = match command {
         ID_MODE_TEMPERATURE => Some(("mode", "temperature")),
