@@ -233,7 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn unsignaled_events_time_out() {
-        assert!(!Event::new().unwrap().wait(Duration::from_millis(1)));
+    fn events_signal_and_time_out() {
+        use windows_sys::Win32::System::Threading::SetEvent;
+
+        let event = Event::new().unwrap();
+        assert!(!event.wait(Duration::from_millis(1)));
+        assert_ne!(unsafe { SetEvent(event.raw()) }, 0);
+        // Manual-reset: it stays signaled until a new overlapped request clears it.
+        assert!(event.wait(Duration::ZERO));
+        assert!(event.wait(Duration::ZERO));
     }
 }
