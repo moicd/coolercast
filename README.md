@@ -29,7 +29,7 @@ service written in Rust, plus an optional tray icon and settings window on Windo
 | Processes | 16 (plus 3 services and 4 drivers) | 1 service + optional tray icon |
 | RAM | ~1 GB working set | 0.8 MB private (service), 2.5 MB (app with its window open) |
 | CPU while idle | several Chromium processes awake | 0 % (wakes once per second) |
-| Install size | ~1.2 GB | 1.3 MB |
+| Install size | ~1.2 GB | 1.4 MB |
 | Platforms | Windows | Windows and Linux |
 
 <sub>Measured on a Windows 11 test system. RAM for CoolerCast is the private working set shown by
