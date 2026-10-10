@@ -6,9 +6,14 @@ use std::{mem, ptr};
 
 use coolercast_core::win::wide;
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, HBITMAP, HDC,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GetDIBits, HBITMAP, HDC,
 };
 use windows_sys::Win32::Graphics::GdiPlus::*;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    DestroyIcon, GetIconInfo, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
+};
 
 /// Keeps GDI+ initialized while alive.
 pub struct Gdiplus(usize);
@@ -112,8 +117,8 @@ struct Font {
     raw: *mut GpFont,
 }
 
-/// A 32-bit top-down DIB and its pixels.
-pub fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
+/// The header of a 32-bit top-down DIB.
+fn dib_info(w: i32, h: i32) -> BITMAPINFO {
     let mut bmi: BITMAPINFO = unsafe { mem::zeroed() };
     bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
     bmi.bmiHeader.biWidth = w;
@@ -121,14 +126,104 @@ pub fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
+    bmi
+}
+
+/// A 32-bit top-down DIB and its pixels.
+pub fn pixel_bitmap(hdc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u8) {
+    let bmi = dib_info(w, h);
     let mut bits = ptr::null_mut();
     let bitmap =
         unsafe { CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0) };
     (bitmap, bits.cast())
 }
 
-/// `PixelFormat32bppPARGB` from the GDI+ headers (a macro, missing from windows-sys).
+/// `PixelFormat32bppPARGB` and `PixelFormat32bppARGB` from the GDI+ headers (macros, missing
+/// from windows-sys).
 const PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000E_200B;
+const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
+
+/// A picture for [`Canvas::image`], with the pixels GDI+ reads it from.
+pub struct Image {
+    raw: *mut GpBitmap,
+    size: i32,
+    _pixels: Vec<u8>,
+}
+
+impl Image {
+    /// Icon resource `id` of this executable, `size` pixels square. Windows scales the nearest
+    /// image of the icon when it has none of that size.
+    pub fn icon(id: u16, size: i32) -> Option<Self> {
+        let instance = unsafe { GetModuleHandleW(ptr::null()) };
+        let icon = unsafe {
+            LoadImageW(
+                instance,
+                id as usize as _,
+                IMAGE_ICON,
+                size,
+                size,
+                LR_DEFAULTCOLOR,
+            )
+        };
+        if icon.is_null() {
+            return None;
+        }
+        let mut info: ICONINFO = unsafe { mem::zeroed() };
+        let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
+        unsafe { DestroyIcon(icon) };
+        if !ok {
+            return None;
+        }
+        // The color bitmap of a 32-bit icon holds straight (not premultiplied) BGRA.
+        let mut bmi = dib_info(size, size);
+        let mut pixels = vec![0u8; (size * size * 4) as usize];
+        let rows = unsafe {
+            let dc = CreateCompatibleDC(ptr::null_mut());
+            let rows = GetDIBits(
+                dc,
+                info.hbmColor,
+                0,
+                size as u32,
+                pixels.as_mut_ptr().cast(),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+            DeleteDC(dc);
+            DeleteObject(info.hbmColor);
+            DeleteObject(info.hbmMask);
+            rows
+        };
+        if rows != size {
+            return None;
+        }
+        let mut raw = ptr::null_mut();
+        let status = unsafe {
+            GdipCreateBitmapFromScan0(
+                size,
+                size,
+                size * 4,
+                PIXEL_FORMAT_32BPP_ARGB,
+                pixels.as_mut_ptr(),
+                &mut raw,
+            )
+        };
+        (status == Ok).then_some(Self {
+            raw,
+            size,
+            _pixels: pixels,
+        })
+    }
+
+    pub fn size(&self) -> i32 {
+        self.size
+    }
+}
+
+impl Drop for Image {
+    fn drop(&mut self) {
+        unsafe { GdipDisposeImage(self.raw.cast()) };
+    }
+}
 
 pub struct Canvas {
     g: *mut GpGraphics,
@@ -325,42 +420,6 @@ impl Canvas {
         unsafe { GdipDeletePath(path) };
     }
 
-    /// Calls `f` with a vertical gradient brush spanning `r` (device pixels).
-    fn with_gradient(&self, r: Rect, top: Color, bottom: Color, f: impl FnOnce(*mut GpBrush)) {
-        // One pixel of overscan keeps the wrapped gradient from bleeding into the edges.
-        let rect = RectF {
-            X: r.x,
-            Y: r.y - 1.0,
-            Width: r.w.max(1.0),
-            Height: r.h + 2.0,
-        };
-        let mut brush: *mut GpLineGradient = ptr::null_mut();
-        unsafe {
-            GdipCreateLineBrushFromRect(
-                &rect,
-                top.0,
-                bottom.0,
-                LinearGradientModeVertical,
-                WrapModeTileFlipXY,
-                &mut brush,
-            )
-        };
-        f(brush.cast());
-        unsafe { GdipDeleteBrush(brush.cast()) };
-    }
-
-    /// Fills a rounded rectangle with a vertical gradient.
-    pub fn fill_round_rect_v(&self, r: Rect, radius: f32, top: Color, bottom: Color) {
-        if top == bottom {
-            return self.fill_round_rect(r, radius, top);
-        }
-        let path = self.rounded_path(r, radius);
-        self.with_gradient(self.r(r), top, bottom, |b| unsafe {
-            GdipFillPath(self.g, b, path);
-        });
-        unsafe { GdipDeletePath(path) };
-    }
-
     pub fn stroke_round_rect(&self, r: Rect, radius: f32, width: f32, color: Color) {
         // Keep the stroke inside the rectangle.
         let path = self.rounded_path(r.inset(width / 2.0, width / 2.0), radius);
@@ -381,23 +440,13 @@ impl Canvas {
         });
     }
 
-    /// An arc of the circle at `(cx, cy)`; angles in degrees, clockwise from the positive x axis.
-    pub fn stroke_arc(
-        &self,
-        (cx, cy): (f32, f32),
-        radius: f32,
-        (start, sweep): (f32, f32),
-        width: f32,
-        color: Color,
-    ) {
-        let (x, y, d) = (
-            self.s(cx - radius),
-            self.s(cy - radius),
-            self.s(radius * 2.0),
-        );
-        self.with_pen(color, width, |p| unsafe {
-            GdipDrawArc(self.g, p, x, y, d, d, start, sweep);
-        });
+    /// Draws `image` scaled to fill `r`.
+    pub fn image(&self, image: &Image, r: Rect) {
+        let r = self.r(r);
+        unsafe {
+            GdipSetInterpolationMode(self.g, InterpolationModeHighQualityBicubic);
+            GdipDrawImageRect(self.g, image.raw.cast(), r.x, r.y, r.w, r.h);
+        }
     }
 
     pub fn line(&self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {

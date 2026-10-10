@@ -1,10 +1,16 @@
-# Renders assets/coolercast.ico: a teal rounded square with a white "°C" mark.
-# Each size is drawn separately so small sizes stay crisp. Run with Windows PowerShell 5.1.
+# Renders assets/coolercast.ico from assets/logo.png (the full logo: a dark rounded badge with a
+# microphone around a fan and the "COOLERCAST" wordmark). The wordmark is unreadable below 128
+# pixels, so smaller sizes show only the microphone, zoomed in on the same badge.
+# Run with Windows PowerShell 5.1.
 
 Add-Type -AssemblyName System.Drawing
 
-$sizes = 16, 20, 24, 32, 40, 48, 64, 256
+$sizes = 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 256
+$logo = [System.Drawing.Bitmap]::FromFile((Join-Path $PSScriptRoot 'logo.png'))
 $out = Join-Path $PSScriptRoot 'coolercast.ico'
+
+# The microphone in logo.png, as fractions of its size: square in the original artwork.
+$mark = New-Object System.Drawing.RectangleF (0.154 * $logo.Width), (0.063 * $logo.Height), (0.689 * $logo.Width), (0.670 * $logo.Height)
 
 function New-RoundedRect([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
@@ -18,39 +24,41 @@ function New-RoundedRect([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) 
 }
 
 function Render([int]$size) {
+    $source = if ($size -ge 128) {
+        New-Object System.Drawing.RectangleF 0, 0, $logo.Width, $logo.Height
+    } else {
+        $mark
+    }
+
+    # Scale the artwork first, then cut the badge out of it with an anti-aliased fill.
+    $art = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($art)
+    $g.InterpolationMode = 'HighQualityBicubic'
+    $g.PixelOffsetMode = 'HighQuality'
+    $wrap = New-Object System.Drawing.Imaging.ImageAttributes
+    $wrap.SetWrapMode('TileFlipXY')
+    $g.DrawImage($logo, (New-Object System.Drawing.Rectangle 0, 0, $size, $size),
+        $source.X, $source.Y, $source.Width, $source.Height, 'Pixel', $wrap)
+    $g.Dispose()
+
     $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = 'AntiAlias'
     $g.PixelOffsetMode = 'HighQuality'
     $g.Clear([System.Drawing.Color]::Transparent)
-
-    # Badge
-    $inset = [Math]::Max(0.5, $size / 32)
-    $rect = New-Object System.Drawing.RectangleF $inset, $inset, ($size - 2 * $inset), ($size - 2 * $inset)
-    $badge = New-RoundedRect $rect.X $rect.Y $rect.Width $rect.Height ($size * 0.22)
-    $top = [System.Drawing.Color]::FromArgb(255, 20, 184, 166)     # #14B8A6
-    $bottom = [System.Drawing.Color]::FromArgb(255, 15, 118, 110)  # #0F766E
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush $rect, $top, $bottom, 90
-    $g.FillPath($brush, $badge)
-
-    # "C": a thick arc opening to the right
-    $stroke = [Math]::Max(2, $size * 0.13)
-    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), $stroke
-    $pen.StartCap = 'Round'
-    $pen.EndCap = 'Round'
-    $cx = $size * 0.56; $cy = $size * 0.55; $r = $size * 0.25
-    $g.DrawArc($pen, $cx - $r, $cy - $r, 2 * $r, 2 * $r, 45, 270)
-
-    # Degree ring, top left
-    $ringStroke = [Math]::Max(1.5, $size * 0.07)
-    $ringPen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), $ringStroke
-    $dr = [Math]::Max(1.6, $size * 0.085)
-    $dx = $size * 0.24; $dy = $size * 0.27
-    $g.DrawEllipse($ringPen, $dx - $dr, $dy - $dr, 2 * $dr, 2 * $dr)
-
+    $inset = if ($size -ge 32) { 0.5 } else { 0 }
+    $badge = New-RoundedRect $inset $inset ($size - 2 * $inset) ($size - 2 * $inset) ($size * 0.22)
+    $g.FillPath((New-Object System.Drawing.TextureBrush $art), $badge)
+    # A faint rim keeps the dark badge visible on a dark taskbar.
+    if ($size -ge 32) {
+        $rim = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(48, 255, 255, 255)), 1
+        $g.DrawPath($rim, $badge)
+    }
     $g.Dispose()
+    $art.Dispose()
+
     $ms = New-Object System.IO.MemoryStream
-    if ($size -ge 256) {
+    if ($size -ge 64) {
         # Large sizes are stored as PNG.
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     } else {
@@ -81,6 +89,7 @@ function Render([int]$size) {
 }
 
 $images = foreach ($s in $sizes) { , (Render $s) }
+$logo.Dispose()
 
 $fs = [System.IO.File]::Create($out)
 $w = New-Object System.IO.BinaryWriter $fs

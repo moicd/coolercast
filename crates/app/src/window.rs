@@ -52,7 +52,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::anim::{Span, Tween};
 use crate::autostart;
-use crate::gfx::{Align, Canvas, Color, Gdiplus, Rect, Weight, pixel_bitmap};
+use crate::gfx::{Align, Canvas, Color, Gdiplus, Image, Rect, Weight, pixel_bitmap};
 use crate::i18n::{self, LANGS, Lang, Strings, fill};
 use crate::preview::{self, Frame};
 use crate::theme::{self, Theme};
@@ -626,20 +626,14 @@ fn status_lines(status: Option<&Status>, t: &Strings) -> (Level, String, String)
     }
 }
 
-/// The app icon, as `assets/make-icon.ps1` draws it: a teal badge with a white "°C" mark.
-fn draw_app_icon(c: &Canvas, r: Rect) {
-    let size = r.w;
-    c.fill_round_rect_v(
-        r,
-        size * 0.22,
-        Color::rgb(0x14, 0xB8, 0xA6),
-        Color::rgb(0x0F, 0x76, 0x6E),
-    );
-    let white = Color::rgb(0xFF, 0xFF, 0xFF);
-    let center = (r.x + size * 0.56, r.y + size * 0.55);
-    c.stroke_arc(center, size * 0.25, (45.0, 270.0), size * 0.13, white);
-    let ring = (r.x + size * 0.24, r.y + size * 0.27);
-    c.stroke_arc(ring, size * 0.085, (0.0, 360.0), size * 0.07, white);
+/// The image of the app icon to scale down to `pixels`: the smallest of the sizes
+/// `assets/make-icon.ps1` stores that is at least as large. Larger sizes add the wordmark,
+/// which the sidebar already shows as text, so they are never picked.
+fn icon_size(pixels: i32) -> i32 {
+    [40, 48, 64, 80, 96]
+        .into_iter()
+        .find(|&size| size >= pixels)
+        .unwrap_or(96)
 }
 
 /// One line saying what the display shows right now.
@@ -771,6 +765,8 @@ struct Settings {
     /// Setting cards from the last paint, and the one under the mouse.
     rows: Vec<(Control, Rect)>,
     hover_row: Option<Control>,
+    /// The app icon of the sidebar, loaded at the size the last paint needed.
+    icon: Option<Image>,
     // Last: shut down after everything else is released.
     _gdiplus: Gdiplus,
 }
@@ -902,6 +898,7 @@ pub fn open() {
         menu_pill: None,
         rows: Vec::new(),
         hover_row: None,
+        icon: None,
         _gdiplus: gdiplus,
     };
     style_title_bar(hwnd, &state.theme);
@@ -1669,7 +1666,15 @@ impl Settings {
         let t = self.theme;
         let tx = i18n::text();
         let panel = Rect::new(INSET, INSET, SIDEBAR_W, HEIGHT - 2.0 * INSET);
-        draw_app_icon(c, Rect::new(28.0, 30.0, 40.0, 40.0));
+        let icon = Rect::new(28.0, 30.0, 40.0, 40.0);
+        let size = icon_size((icon.w * self.scale).round() as i32);
+        if self.icon.as_ref().map(Image::size) != Some(size) {
+            // Resource 1 is the application icon embedded by build.rs.
+            self.icon = Image::icon(1, size);
+        }
+        if let Some(image) = &self.icon {
+            c.image(image, icon);
+        }
         let text_x = 80.0;
         let text_w = panel.right() - text_x - 12.0;
         c.text(
