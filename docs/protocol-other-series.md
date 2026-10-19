@@ -1,8 +1,8 @@
 # Other DeepCool display protocols
 
 Protocols of the displays supported besides the AK series ([protocol-ak-series.md](protocol-ak-series.md)).
-None of them has been tested on real hardware by CoolerCast yet: they are implemented from the
-community mapping tables listed under [Sources](#sources). Reports from owners are welcome.
+They are implemented from the community mapping tables listed under [Sources](#sources). Only the
+LD series (`3633:000A`) has been tested on real hardware so far. Reports from owners are welcome.
 
 | USB ID | Model | Family |
 |---|---|---|
