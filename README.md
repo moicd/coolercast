@@ -83,7 +83,7 @@ These links always point to the latest version. Older versions, release notes an
 | AK500S DIGITAL / DIGITAL SE | `3633:0004` | Same protocol, untested |
 | LS520 SE / LS720 SE DIGITAL | `3633:0006` | Experimental, untested |
 | AG400 / AG620 DIGITAL | `3633:0008` | Experimental, untested |
-| LD240 / LD360 | `3633:000A` | Experimental, untested |
+| LD240 / LD360 | `3633:000A` | Tested |
 | LQ240 / LQ360 | `3633:000D` | Experimental, untested |
 | ASSASSIN IV VC VISION | `3633:000F`, `3633:001F` | Experimental, untested |
 | AK400 DIGITAL PRO | `3633:0010` | Experimental, untested |
