@@ -2,7 +2,7 @@
 
 Protocols of the displays supported besides the AK series ([protocol-ak-series.md](protocol-ak-series.md)).
 They are implemented from the community mapping tables listed under [Sources](#sources). Only the
-LD series (`3633:000A`) has been tested on real hardware so far. Reports from owners are welcome.
+LD series (`3633:000A`) and the CH690 DIGITAL have been tested on real hardware so far. Reports from owners are welcome.
 
 | USB ID | Model | Family |
 |---|---|---|
@@ -130,6 +130,11 @@ A framed report like the [framed reports](#framed-reports-ld-pro-and-lq), with a
 CoolerCast sends page `2` or `4` depending on the `source` setting (`auto` alternates them) and
 fills both the CPU and the GPU fields. The fan and PSU fields are sent as 0: there is no
 vendor-neutral way to read them.
+
+The CH690 DIGITAL declares four output reports (`16`, `2`, `3` and `4`) and Windows lists `2` first.
+The display ignores frames sent with report ID `2` and shows those sent with `16`, which is the one
+CoolerCast picks. Tested on a CH690 DIGITAL: both the CPU page (`2`) and the GPU page (`4`) show
+their values.
 
 ## CH510 MESH DIGITAL
 

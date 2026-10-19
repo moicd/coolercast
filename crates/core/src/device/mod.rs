@@ -127,7 +127,10 @@ pub const MODELS: &[Model] = &[
     deepcool(0x0013, "CH170 DIGITAL", Family::ChGen2),
     deepcool(0x0015, "CH360 DIGITAL", Family::ChSeries),
     deepcool(0x0016, "CH270 DIGITAL", Family::ChGen2),
-    deepcool(0x001B, "CH690 DIGITAL", Family::ChGen2),
+    Model {
+        experimental: false,
+        ..deepcool(0x001B, "CH690 DIGITAL", Family::ChGen2)
+    },
     deepcool(0x001F, "ASSASSIN IV VC VISION", Family::LqSeries),
     deepcool(0x0029, "AK620 G2 DIGITAL NYX", Family::LqSeries),
     deepcool(0x002A, "AK700 DIGITAL NYX", Family::LqSeries),
@@ -458,6 +461,7 @@ mod tests {
         assert_eq!(model(DEEPCOOL_VID, 0x1100), None);
         assert!(!model(DEEPCOOL_VID, 1).unwrap().experimental);
         assert!(model(DEEPCOOL_VID, 0x10).unwrap().experimental);
+        assert!(!model(DEEPCOOL_VID, 0x1B).unwrap().experimental);
     }
 
     #[test]
