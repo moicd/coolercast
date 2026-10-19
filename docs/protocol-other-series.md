@@ -28,7 +28,10 @@ community mapping tables listed under [Sources](#sources). Reports from owners a
 
 The transport is the same as for the AK series: one output report per update, padded with zeros
 to the report length the device declares. D0 is the report ID (`16`, or `0` for devices without
-report IDs); the tables below list the bytes after it.
+report IDs); the tables below list the bytes after it. Some devices declare several output
+reports: the LD series (`3633:000A`) declares 2, 3, 4 and 16, and only report 16 drives the
+display. CoolerCast uses report 16 whenever the device declares it, and otherwise the first output
+report.
 
 ## AG series
 
@@ -168,12 +171,15 @@ refresh after start-up has no power value (sent as 0).
 
 ## Sources
 
-- The community-maintained device list and mapping tables in
+- The community-maintained device list
+  ([`README.md`](https://github.com/Nortank12/deepcool-digital-linux/blob/main/device-list/README.md),
+  VID/PID per model) and mapping tables in
   [Nortank12/deepcool-digital-linux](https://github.com/Nortank12/deepcool-digital-linux/tree/main/device-list):
   `ag-series.md`, `ls-series.md`, `ld-series.md`, `ak400-pro.md`, `ak620-pro.md`, `lq-series.md`,
-  `ch-series.md`, `ch-series-gen2.md` and `ch510.md`. Byte order (big-endian), the LS and CH bar
-  rules and the CH 2nd generation page values are from the same project. Only these protocol
-  facts are used; no code was copied.
+  `ch-series.md`, `ch-series-gen2.md` and `ch510.md`. Their D0 rows give report ID `16`; the
+  CH510 table has no report ID. Byte order (big-endian), the LS and CH bar rules and the CH 2nd
+  generation page values are from the same project. Only these protocol facts are used; no code
+  was copied.
 - RAPL registers: Intel SDM vol. 4 (`MSR_RAPL_POWER_UNIT`, `MSR_PKG_ENERGY_STATUS`) and the AMD
   family 17h PPR (`MSR C001_0299`, `MSR C001_029B`); allowed by the PawnIO `IntelMSR` and
   `AMDFamily17` modules.

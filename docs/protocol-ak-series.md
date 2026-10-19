@@ -59,8 +59,8 @@ The *SE* variants use the same packet but their report descriptor has no report 
 is shifted one position to the left on the wire (64 bytes starting with the mode byte). On Windows
 the HID stack hides that difference: a device without report IDs takes a 65-byte buffer whose first
 byte is `0`, followed by the same payload. CoolerCast reads the report ID from the device's
-report descriptor (`HidP_GetValueCaps`) and uses it as D0, which covers both variants with a single
-code path.
+report descriptor (`HidP_GetValueCaps` and `HidP_GetButtonCaps`) and uses it as D0, which covers
+both variants with a single code path.
 
 For example, an `A400-DIGITAL` (PID `0x0001`) reports report ID `0` and an `OutputReportByteLength`
 of 65.

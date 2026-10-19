@@ -23,7 +23,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::core::GUID;
 
-use super::DeviceInfo;
+use super::{DeviceInfo, pick_report_id};
 use crate::win::{Event, Handle, from_wide, wide};
 
 /// How long a single output report may take before the write is cancelled.
@@ -167,15 +167,16 @@ fn query(path: &str, vendor_ids: &[u16]) -> Option<DeviceInfo> {
     })
 }
 
-/// Finds the report ID used by the output report, looking at value caps first, then buttons.
+/// Finds the report ID of the display among the output reports of value and button caps.
 fn output_report_id(preparsed: PHIDP_PREPARSED_DATA, caps: &HIDP_CAPS) -> u8 {
+    let mut ids = Vec::new();
     if caps.NumberOutputValueCaps > 0 {
         let mut len = caps.NumberOutputValueCaps;
         let mut values: Vec<HIDP_VALUE_CAPS> = vec![unsafe { mem::zeroed() }; len as usize];
         let status =
             unsafe { HidP_GetValueCaps(HidP_Output, values.as_mut_ptr(), &mut len, preparsed) };
-        if status == HIDP_STATUS_SUCCESS && len > 0 {
-            return values[0].ReportID;
+        if status == HIDP_STATUS_SUCCESS {
+            ids.extend(values[..len as usize].iter().map(|v| v.ReportID));
         }
     }
     if caps.NumberOutputButtonCaps > 0 {
@@ -183,11 +184,11 @@ fn output_report_id(preparsed: PHIDP_PREPARSED_DATA, caps: &HIDP_CAPS) -> u8 {
         let mut buttons: Vec<HIDP_BUTTON_CAPS> = vec![unsafe { mem::zeroed() }; len as usize];
         let status =
             unsafe { HidP_GetButtonCaps(HidP_Output, buttons.as_mut_ptr(), &mut len, preparsed) };
-        if status == HIDP_STATUS_SUCCESS && len > 0 {
-            return buttons[0].ReportID;
+        if status == HIDP_STATUS_SUCCESS {
+            ids.extend(buttons[..len as usize].iter().map(|b| b.ReportID));
         }
     }
-    0
+    pick_report_id(ids).unwrap_or(0)
 }
 
 fn open(path: &str, access: u32, flags: u32) -> io::Result<Handle> {

@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::DeviceInfo;
+use super::{DeviceInfo, pick_report_id};
 
 const SYSFS_HIDRAW: &str = "/sys/class/hidraw";
 const DEV: &str = "/dev";
@@ -98,7 +98,7 @@ struct Layout {
     /// Usage page and usage of the first top-level collection.
     usage_page: u16,
     usage: u16,
-    /// Report ID of the first output report, 0 when the device has no report IDs.
+    /// Report ID of the display's output report, 0 when the device has no report IDs.
     report_id: u8,
     /// Size of that output report plus the report ID byte, as on Windows; 0 without output.
     output_report_len: usize,
@@ -111,7 +111,8 @@ impl Layout {
         let (mut usage_page, mut usage) = (0u32, None);
         let (mut report_size, mut report_count, mut report_id) = (0u32, 0u32, 0u8);
         let mut collection_seen = false;
-        let mut output: Option<(u8, u32)> = None;
+        // Bits of each output report, in descriptor order.
+        let mut outputs: Vec<(u8, u32)> = Vec::new();
 
         let mut i = 0;
         while i < descriptor.len() {
@@ -143,11 +144,9 @@ impl Layout {
                     layout.usage_page = usage_page as u16;
                     layout.usage = usage.unwrap_or(0) as u16;
                 }
-                // Output item: count the bits of the first output report only.
-                0x90 => match &mut output {
-                    None => output = Some((report_id, report_size * report_count)),
-                    Some((id, bits)) if *id == report_id => *bits += report_size * report_count,
-                    Some(_) => {}
+                0x90 => match outputs.iter_mut().find(|(id, _)| *id == report_id) {
+                    Some((_, bits)) => *bits += report_size * report_count,
+                    None => outputs.push((report_id, report_size * report_count)),
                 },
                 _ => {}
             }
@@ -158,7 +157,12 @@ impl Layout {
             i += 1 + size;
         }
 
-        if let Some((id, bits)) = output.filter(|&(_, bits)| bits > 0) {
+        outputs.retain(|&(_, bits)| bits > 0);
+        if let Some(id) = pick_report_id(outputs.iter().map(|&(id, _)| id)) {
+            let bits = outputs
+                .iter()
+                .find(|&&(i, _)| i == id)
+                .map_or(0, |&(_, b)| b);
             layout.report_id = id;
             layout.output_report_len = (bits as usize).div_ceil(8) + 1;
         }
@@ -251,6 +255,23 @@ mod tests {
             0x85, 0x10, // Report ID 16
             0x75, 0x08, 0x95, 0x3F, 0x09, 0x01, 0x91, 0x02, // 63-byte output
             0x85, 0x20, 0x95, 0x10, 0x09, 0x01, 0x91, 0x02, // second output report, ignored
+            0xC0,
+        ];
+        let layout = Layout::parse(&descriptor);
+        assert_eq!(layout.report_id, 16);
+        assert_eq!(layout.output_report_len, 64);
+    }
+
+    /// Output reports 2, 3, 4 and 16, as declared by the LD series.
+    #[test]
+    fn display_report_among_several() {
+        let descriptor = [
+            0x06, 0x00, 0xFF, 0x09, 0x01, 0xA1, 0x01, // vendor collection
+            0x75, 0x08, // Report Size 8
+            0x85, 0x02, 0x95, 0x10, 0x09, 0x01, 0x91, 0x02, // 16-byte output report 2
+            0x85, 0x03, 0x95, 0x10, 0x09, 0x01, 0x91, 0x02, // 16-byte output report 3
+            0x85, 0x04, 0x95, 0x10, 0x09, 0x01, 0x91, 0x02, // 16-byte output report 4
+            0x85, 0x10, 0x95, 0x3F, 0x09, 0x01, 0x91, 0x02, // 63-byte output report 16
             0xC0,
         ];
         let layout = Layout::parse(&descriptor);
