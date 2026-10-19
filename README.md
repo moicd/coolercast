@@ -93,7 +93,8 @@ These links always point to the latest version. Older versions, release notes an
 | AK700 DIGITAL NYX | `3633:002A` | Experimental, untested |
 | CH510 MESH DIGITAL (case) | `34D3:1100` | Experimental, untested |
 | CH560 DIGITAL / CH360 DIGITAL / MORPHEUS (cases) | `3633:0005`, `3633:0015`, `3633:0007` | Experimental, untested |
-| CH170 / CH270 / CH690 DIGITAL (cases) | `3633:0013`, `3633:0016`, `3633:001B` | Experimental, untested |
+| CH170 / CH270 DIGITAL (cases) | `3633:0013`, `3633:0016` | Same protocol, untested |
+| CH690 DIGITAL (case) | `3633:001B` | Tested (`CH690-DIGITAL`) |
 
 The experimental models are implemented from community protocol notes and have not been tried on
 real hardware yet. If you own one, `coolercast list` and `coolercast test` (see [Usage](#usage))
